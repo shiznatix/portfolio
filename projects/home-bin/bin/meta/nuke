@@ -1,0 +1,184 @@
+#!/bin/bash
+
+source /var/lib/home-bin/.env
+
+show_help() {
+	cat << 'EOF'
+Strip metadata and reset timestamps.
+
+Usage: $0 [options] SOURCE
+Options:
+  -D, --dir-ok	 Run for all files in the supplied directory. Must be set if the source is a directory.
+  -r, --recursive  Recursively process all files in the supplied directory and its subdirectories.
+  -e, --epoch	  Set file dates to the specified epoch date (default: "1970-01-01 00:00:00").
+  -h, --help	   Show this help message
+
+EOF
+	exit "${1:-0}"
+}
+
+# Colors
+BOLD="\033[1m"
+GREEN="\033[0;32m"
+YELLOW="\033[0;33m"
+CYAN="\033[0;36m"
+RED="\033[0;31m"
+BLUE="\033[0;34m"
+MAGENTA="\033[0;35m"
+WHITE="\033[1;37m"
+BLACK="\033[0;30m"
+RESET="\033[0m"
+
+required_tools=("file" "touch" "exiftool" "getfattr" "setfattr")
+dir_ok=false
+recursive=false
+epoch_date=""
+input_files=()
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		--completion)
+			shift
+			curr="$1"
+			if [[ "$curr" == -* ]]; then
+				[ "$dir_ok" = false ] && echo "flag:--dir-ok"
+				[ "$recursive" = false ] && echo "flag:--recursive"
+				[ -z "$epoch_date" ] && echo "flag:--epoch"
+				echo "flag:--help"
+			else
+				echo "file:"
+			fi
+			exit 0
+			;;
+		-D|--dir-ok)
+			dir_ok=true
+			shift
+			;;
+		-r|--recursive)
+			recursive=true
+			shift
+			;;
+		-e|--epoch)
+			shift
+			if [ -n "$1" ]; then
+				epoch_date="$1"
+				shift
+			else
+				echo "Error: --epoch requires a date argument." >&2
+				exit 1
+			fi
+			;;
+		-h|--help)
+			show_help 0
+			;;
+		*)
+			# Collect non-flag arguments
+			input_files+=("$1")
+			shift
+			;;
+	esac
+done
+
+epoch_date="${epoch_date:-1970-01-01 00:00:00}"
+
+declare -A FILES_MAP
+for file in "${input_files[@]}"; do
+	if [ -d "$file" ]; then
+		if [ "$recursive" = true ]; then
+			while IFS= read -r -d '' f; do
+				FILES_MAP["$(realpath "$f")"]=1
+			done < <(find "$file" -type f -print0)
+		else
+			while IFS= read -r -d '' f; do
+				FILES_MAP["$(realpath "$f")"]=1
+			done < <(find "$file" -maxdepth 1 -type f -print0)
+		fi
+	elif [ -f "$file" ]; then
+		FILES_MAP["$(realpath "$file")"]=1
+	else
+		echo "Error: File not found: $file" >&2
+		exit 1
+	fi
+done
+
+FILES=("${!FILES_MAP[@]}")
+
+if [ "${#FILES[@]}" -eq 0 ]; then
+	echo "Error: No files to process." >&2
+	exit 1
+fi
+
+# Check required binaries
+for tool in "${required_tools[@]}"; do
+	if ! command -v "$tool" >/dev/null 2>&1; then
+		echo "Error: Required tool '$tool' is not installed or not in PATH."
+		exit 1
+	fi
+done
+
+echo -e "${BOLD}Files to be processed:${RESET}"
+file_count=0
+for file in "${FILES[@]}"; do
+	if [ $file_count -gt 9 ]; then
+		break
+	fi
+
+	echo -e "  ${YELLOW}${file}${RESET}"
+	$MMHB_CMD meta show -q -c yellow "$file" |
+		while IFS= read -r line; do
+			echo -e "   ${RED}${BOLD}←${RESET} $line"
+		done
+	((file_count++))
+done
+
+if [ "${#FILES[@]}" -gt 10 ]; then
+	omitted=$((${#FILES[@]} - 10))
+	echo -e "  ${BOLD}${CYAN}... $omitted more file(s) omitted from output but will still be processed${RESET}"
+fi
+
+read -r -p "Continue? [Y/n] " response
+if [[ ! "$response" =~ ^[Yy]?$ ]]; then
+	echo "Aborted."
+	exit 1
+fi
+
+for file in "${FILES[@]}"; do
+	mime_type="$(file --mime-type -b "$file")"
+	echo -e "${BOLD}Processing:${RESET} '${file}' ${CYAN}(MIME type: $mime_type)${RESET}"
+
+	if [[ "$mime_type" == image/* || "$mime_type" == video/* ]]; then
+		echo -ne "  ${CYAN}strip media metadata${RESET}"
+		exiftool -overwrite_original \
+			-all= \
+			-TagsFromFile @ \
+			-FileType -FileTypeExtension -MIMEType \
+			-ImageWidth -ImageHeight -ImageSize \
+			-VideoFrameRate -Duration -AudioChannels -AudioSampleRate \
+			-Rotation -Orientation \
+			"-CreateDate=$epoch_date" \
+			"-ModifyDate=$epoch_date" \
+			"-DateTimeOriginal=$epoch_date" \
+			"-TrackCreateDate=$epoch_date" \
+			"-TrackModifyDate=$epoch_date" \
+			"-MediaCreateDate=$epoch_date" \
+			"-MediaModifyDate=$epoch_date" \
+			"$file" >/dev/null 2>&1
+		echo -e " ${GREEN}✓${RESET}"
+	fi
+
+	echo -ne "  ${CYAN}strip extended attributes${RESET}"
+	for attr in $(getfattr -d "$file" 2>/dev/null | cut -d= -f1); do
+		setfattr -x "$attr" "$file" 2>/dev/null
+	done
+	echo -e " ${GREEN}✓${RESET}"
+
+	echo -ne "  ${CYAN}reset file timestamps (modification & access)${RESET}"
+	touch -d "$epoch_date" -a -m "$file"
+	echo -e " ${GREEN}✓${RESET}"
+
+	$MMHB_CMD meta show -c magenta "$file" |
+		while IFS= read -r line; do
+			echo -e "   ${MAGENTA}${BOLD}→${RESET} $line"
+		done
+
+	echo -e "  ${GREEN}${BOLD}done${RESET}"
+done

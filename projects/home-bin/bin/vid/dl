@@ -1,0 +1,173 @@
+#!/bin/bash
+
+show_help() {
+	cat << 'EOF'
+Download videos using yt-dlp with sane defaults.
+
+Usage: vid-dl [OPTIONS] VIDEO_URL
+
+Options:
+  -u, --update                 Update yt-dlp to the latest version
+  -v, --ignore-vpn             Ignore VPN check
+  -s, --subtitles-only         Download only subtitles
+  -a, --audio-only             Download only audio
+  -p, --max-p <HEIGHT>         Set maximum video height (e.g., 480, 720, 1080)
+  -d, --max-duration <SEC>     Set maximum duration in seconds
+  -i, --playlist-items <R>     Download playlist items (e.g., 1:10)
+  -l, --parallel               Download in parallel
+  -o, --output <FILE>          Set output file name
+  -h, --help                   Show this help message and exit
+
+Examples:
+  vid-dl --mp4 https://youtube.com/...
+  vid-dl --max-p 720 --max-duration 1800 VIDEO_URL
+  vid-dl -o myvideo.mp4 VIDEO_URL
+EOF
+	exit "${1:-0}"
+}
+
+function is_vpn_connected() {
+	nordvpn status | grep -q "Status: Connected"
+}
+
+# Default flag values
+url=""
+update=false
+output_name="%(title)s"
+ignore_vpn=false
+subtitles_only=false
+audio_only=false
+max_p="1080"
+max_duration=""
+playlist_items=""
+parallel=false
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		-u|--update)
+			update=true
+			shift
+			;;
+		-v|--ignore-vpn)
+			ignore_vpn=true
+			shift
+			;;
+		-s|--subtitles-only)
+			subtitles_only=true
+			shift
+			;;
+		-a|--audio-only)
+			audio_only=true
+			shift
+			;;
+		-p|--max-p)
+			max_p="$2"
+			shift 2
+			;;
+		-d|--max-duration)
+			max_duration="$2"
+			shift 2
+			;;
+		-i|--playlist-items)
+			playlist_items="$2"
+			shift 2
+			;;
+		-l|--parallel)
+			parallel=true
+			shift
+			;;
+		-o|--output)
+			output_name="$2"
+			shift 2
+			;;
+		-h|--help)
+			show_help 0
+			;;
+		*)
+			if [[ -z "$url" ]]; then
+				url="$1"
+				shift
+			else
+				echo "Error: Unknown argument: $1"
+				show_help 1
+			fi
+			;;
+	esac
+done
+
+# Handle --update flag
+if $update; then
+	yt-dlp --update
+	if [[ -z "$url" ]]; then
+		exit $?
+	fi
+fi
+
+if [[ -z "$url" ]]; then
+	echo "Error: VIDEO_URL is required."
+	show_help 1
+fi
+
+if ! $ignore_vpn; then
+	if ! is_vpn_connected; then
+		echo "Not connected to VPN!"
+		read -p "Do you want to connect to VPN? [y/N]: " answer
+		if [[ "$answer" =~ ^[Yy]$ ]]; then
+			nordvpn c
+			while ! is_vpn_connected; do
+				echo "Waiting for VPN to connect..."
+				sleep 2
+			done
+			echo "VPN connected."
+		else
+			echo "Aborting."
+			exit 1
+		fi
+	fi
+fi
+
+if $subtitles_only; then
+	if [[ "$output_name" != *.srt ]]; then
+		output_name="${output_name}.srt"
+	fi
+	yt-dlp -o "$output_name" --skip-download --write-subs --convert-subs srt "$url"
+	exit $?
+fi
+
+if $audio_only; then
+	if [[ "$output_name" != *.mp3 ]]; then
+		output_name="${output_name}.mp3"
+	fi
+	yt-dlp -o "$output_name" --extract-audio --audio-format mp3 "$url"
+	exit $?
+fi
+
+if [[ "$output_name" != *.mp4 ]]; then
+	output_name="${output_name}.mp4"
+fi
+
+# Build yt-dlp command based on flags
+YTDLP_CMD=(yt-dlp -o "\"$output_name\"")
+YTDLP_CMD+=(--remux-video mp4)
+YTDLP_CMD+=(-f "\"bestvideo[height<=${max_p}]+bestaudio/best[height<=${max_p}]\"")
+
+# Max duration
+if [[ -n "$max_duration" ]]; then
+	YTDLP_CMD+=(--match-filter "duration <= $max_duration")
+fi
+# Playlist items
+if [[ -n "$playlist_items" ]]; then
+	YTDLP_CMD+=(--playlist-items "$playlist_items")
+fi
+# Parallel downloads
+if $parallel; then
+	# Get video URLs and download in parallel
+	CMD="\"${YTDLP_CMD[@]}\" --flat-playlist --print '%(url)s' \"$url\" | xargs -n1 -P4 -I{} yt-dlp -o \"$output_name\" {}"
+else
+	# Normal download
+	CMD="${YTDLP_CMD[@]} \"$url\""
+fi
+
+echo "Running command: $CMD"
+eval "$CMD"

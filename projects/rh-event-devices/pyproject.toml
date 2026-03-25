@@ -1,0 +1,24 @@
+[project]
+name = "rh-event-devices"
+version = "0.1.0"
+requires-python = "==3.13.5"
+dependencies = [
+    "adafruit-circuitpython-dotstar>=2.2.19",
+    "adafruit-circuitpython-neopixel>=6.3.21",
+    "gpiozero>=2.0.1",
+    "luma-oled>=3.14.0",
+    "numpy>=2.4.2",
+    "opencv-python-headless>=4.13.0.92",
+    "pillow>=12.1.1",
+    "rhpy[web]",
+    "rpi-gpio>=0.7.1",
+    "rpi-ws281x>=5.0.0",
+]
+
+[tool.uv.workspace]
+members = [
+    ".rhpy",
+]
+
+[tool.uv.sources]
+rhpy = { workspace = true, editable = true }

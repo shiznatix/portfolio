@@ -1,0 +1,59 @@
+#!/bin/bash
+
+show_help() {
+	cat << 'EOF'
+Recursively find files by name pattern.
+
+Usage: find <pattern> [dir]
+
+Arguments:
+  pattern   Name pattern to search for (supports wildcards, e.g. '*.log')
+  dir       Directory to search in (default: current directory)
+EOF
+	exit "${1:-0}"
+}
+
+# Parse arguments
+if [ "$1" = "--completion" ]; then
+	echo "dir:"
+	exit 0
+fi
+
+pattern=""
+root_dir=""
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		--completion)
+			if [ -z "$root_dir" ]; then
+				echo "dir:"
+			fi
+			exit 0
+			;;
+		-h|--help)
+			show_help 0
+			;;
+		*)
+			if [ -z "$pattern" ]; then
+				pattern="$1"
+				shift
+			elif [ -n "$root_dir" ]; then
+				echo "Error: Too many arguments" >&2
+				exit 1
+			else
+				root_dir="$1"
+				shift
+			fi
+			;;
+	esac
+done
+
+if [ -z "$pattern" ]; then
+	echo "Error: Missing required argument 'pattern'" >&2
+	show_help 1
+fi
+
+if [ -z "$root_dir" ]; then
+	root_dir="."
+fi
+
+find "$root_dir" -name "$pattern"

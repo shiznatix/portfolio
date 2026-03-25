@@ -1,0 +1,15 @@
+{
+  "private": true,
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "25.3.3",
+    "@vitejs/plugin-react": "5.1.4",
+    "eslint": "10.0.2",
+    "eslint-plugin-simple-import-sort": "12.1.1",
+    "typescript": "5.9.3",
+    "vite": "7.3.1"
+  },
+  "scripts": {
+    "lint": "eslint . --ext .ts,.tsx,.js,.jsx"
+  }
+}

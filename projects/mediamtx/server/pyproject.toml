@@ -1,0 +1,15 @@
+[project]
+name = "server"
+version = "0.1.0"
+requires-python = "==3.13.5"
+dependencies = [
+    "rhpy",
+]
+
+[tool.uv.workspace]
+members = [
+    ".rhpy",
+]
+
+[tool.uv.sources]
+rhpy = { workspace = true, editable = true }

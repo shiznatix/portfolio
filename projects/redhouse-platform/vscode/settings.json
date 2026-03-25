@@ -1,0 +1,63 @@
+{
+	"search.exclude": {
+		"**/venv": true,
+		"**/rhpy": true,
+		"**/__pycache__": true,
+		"**/*.pyc": true,
+		"**/node_modules": true,
+		"**/.git": true,
+		"**/public": true,
+		"**/dist": true,
+		"**/build": true,
+		"**/.old": true,
+		"**/uv.lock*": true
+	},
+
+	"files.watcherExclude": {
+		"**/node_modules/**": true,
+		"**/dist/**": true,
+		"**/build/**": true,
+		"**/public/**": true,
+		"**/.cache/**": true,
+		"**/.git/**": true,
+		"**/.old/**": true,
+		"**/uv.lock*": true
+	},
+	"files.trimTrailingWhitespace": true,
+
+	"editor.formatOnSave": false,
+	"editor.indentSize": "tabSize",
+	"editor.minimap.enabled": true,
+	"editor.codeLens": false,
+
+	"workbench.secondarySideBar.defaultVisibility": "hidden",
+
+	"git.autofetch": true,
+
+	"extensions.ignoreRecommendations": true,
+
+	"[python]": {
+        "editor.insertSpaces": false,
+        "editor.tabSize": 4
+    },
+	"python.defaultInterpreterPath": "${workspaceFolder}/{{PYTHON_ROOT}}.venv/bin/python",
+	"python.analysis.typeCheckingMode": "basic",
+	"python.analysis.extraPaths": [
+		"${workspaceFolder}/{{PYTHON_ROOT}}.rhpy",
+		"${workspaceFolder}/{{PYTHON_ROOT}}src"
+	],
+	"pylint.args": [
+		"--rcfile={{SRC_ROOT}}/redhouse-platform/python/.pylintrc"
+	],
+
+	"js/ts.tsserver.maxMemory": 4096,
+	"js/ts.tsserver.automaticTypeAcquisition.enabled": false,
+	"js/ts.format.semicolons": "insert",
+	"js/ts.suggest.jsdoc.enabled": false,
+	"js/ts.suggest.jsdoc.generateReturns": false,
+	"js/ts.suggestionActions.enabled": false,
+	"eslint.workingDirectories": [
+		{ "directory": "${workspaceFolder}/{{JS_ROOT}}", "changeProcessCWD": true }
+	],
+	"eslint.useFlatConfig": true
+}

@@ -1,0 +1,77 @@
+#!/bin/bash
+
+set -e
+
+show_help() {
+    cat << 'EOF'
+Remove all __pycache__ directories.
+
+Usage: $0 [options]
+
+Options:
+  -d, --dry-run        Show what would be done without making any changes
+  -h, --help           Show this help message and exit
+EOF
+	exit "${1:-0}"
+}
+
+dry_run=false
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --completion)
+            shift
+            curr="$1"
+            if [[ "$curr" == -* ]]; then
+                [ "$dry_run" = false ] && echo "flag:--dry-run"
+                echo "flag:--help"
+            fi
+            exit 0
+            ;;
+        -d|--dry-run)
+            dry_run=true
+			shift
+            ;;
+        -h|--help)
+            show_help 0
+            ;;
+        *)
+            echo "Error: Unknown argument: $1" >&2
+            show_help 1
+            ;;
+    esac
+done
+
+cd ~/src
+
+for folder in *; do
+    [ -d "$folder" ] || continue
+    if [ ! -d "$folder/.git" ]; then
+        continue
+    fi
+
+	(
+		# echo "$folder"
+		cd "$folder"
+		if [ "$dry_run" = true ]; then
+			matches=$(find -P . \
+				-type d \( -name ".venv" -o -name "venv" -o -name "node_modules" -o -name "rhpy" \) -prune -o \
+				-type d -name "__pycache__" -printf "  %p\n")
+			if [ -n "$matches" ]; then
+				echo "Found __pycache__ directories in $folder"
+				echo "$matches"
+			fi
+		else
+			matches=$(find -P . \
+				-type d \( -name ".venv" -o -name "venv" -o -name "node_modules" -o -name "rhpy" \) -prune -o \
+				-type d -name "__pycache__" -printf "  %p\n")
+			if [ -n "$matches" ]; then
+				echo "Removing __pycache__ directories in $folder"
+				while IFS= read -r dir; do
+					rm -rf "$dir"
+					echo "$dir"
+				done <<< "$matches"
+			fi
+		fi
+	)
+done
+

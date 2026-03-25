@@ -1,0 +1,28 @@
+[project]
+name = "rh-image-detector"
+version = "0.1.0"
+requires-python = "==3.11.10"
+dependencies = [
+    "numpy>=1.26.4",
+    "opencv-python>=4.11.0.86",
+    "rhpy",
+]
+
+[project.optional-dependencies]
+mediapipe = [
+    "mediapipe==0.10.18",
+]
+blazeface = [
+    "tflite-runtime>=2.14.0",
+]
+yolo = [
+    "torch>=2.10.0",
+]
+
+[tool.uv.workspace]
+members = [
+    ".rhpy",
+]
+
+[tool.uv.sources]
+rhpy = { workspace = true, editable = true }

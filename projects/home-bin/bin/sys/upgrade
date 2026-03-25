@@ -1,0 +1,28 @@
+#!/bin/bash
+
+show_help() {
+	cat << 'EOF'
+Upgrade apt/snap packages.
+
+Usage: $0 [-h|--help]
+EOF
+	exit "${1:-0}"
+}
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		-h|--help)
+			show_help 0
+			;;
+		*)
+			echo "Unknown option: $1" >&2
+			show_help 1
+			;;
+	esac
+done
+
+sudo apt update
+sudo apt full-upgrade -y --allow-downgrades && sudo apt autoremove -y
+
+if command -v snap &> /dev/null; then
+	sudo snap refresh
+fi

@@ -1,0 +1,172 @@
+#!/bin/bash
+
+set -e
+
+source /var/lib/home-bin/.env
+hb_bin_dir="/var/lib/home-bin/bin"
+
+BOLD=$'\033[1m'
+DIM=$'\033[2m'
+ITALIC=$'\033[3m'
+UNDERLINE=$'\033[4m'
+GREEN=$'\033[32m'
+CYAN=$'\033[36m'
+YELLOW=$'\033[33m'
+RESET=$'\033[0m'
+
+print_help_apps() {
+	# $1: apps directory
+	local dir="$1"
+	local items=()
+	if [ -d "$dir" ]; then
+		for file in "$dir"/*; do
+			[ -e "$file" ] || continue
+			items+=("$(basename "$file")")
+		done
+		if [ ${#items[@]} -gt 0 ]; then
+			echo
+			echo -e "${UNDERLINE}AVAILABLE APPS:${RESET}"
+			echo -n "  "
+			for item in "${items[@]}"; do
+				echo -ne "${BOLD}${item}${RESET}    "
+			done
+			echo
+		fi
+	fi
+}
+
+print_help_groups() {
+	# $1: bin directory
+	local bin_dir="$1"
+	if [ -d "$bin_dir" ]; then
+		echo
+		echo -e "${UNDERLINE}AVAILABLE GROUPS AND COMMANDS:${RESET}"
+		local first_group=1
+		for group_dir in "${bin_dir}"/*/; do
+			[ -d "$group_dir" ] || continue
+			group_name=$(basename "$group_dir")
+			local has_cmds=0
+			for cmd_file in "$group_dir"*; do
+				[ -x "$cmd_file" ] || continue
+				has_cmds=1
+				break
+			done
+			if [ "$has_cmds" -eq 1 ]; then
+				[ "$first_group" -eq 1 ] && first_group=0 || echo
+				for cmd_file in "$group_dir"*; do
+					[ -x "$cmd_file" ] || continue
+					cmd_name=$(basename "$cmd_file")
+					if [ -L "$cmd_file" ]; then
+						description="${ITALIC}-> $(basename "$(readlink "$cmd_file")")${RESET}"
+					else
+						description=$("$cmd_file" --help 2>/dev/null | head -n1 || true)
+					fi
+					cmd_plain="$MMHB_CMD $group_name $cmd_name"
+					cmd_colored="${BOLD}${GREEN}${MMHB_CMD}${RESET} ${BOLD}${CYAN}${group_name}${RESET} ${BOLD}${YELLOW}${cmd_name}${RESET}"
+					padding=$(printf '%*s' $((19 - ${#cmd_plain})) '')
+					echo -e "  ${cmd_colored}${padding}  ${description}"
+				done
+			fi
+		done
+	fi
+}
+
+print_help_aliases() {
+	# $1: directory
+	local dir="$1"
+	if [ -d "$dir" ]; then
+		local found=0
+		for file in "$dir"/*; do
+			[ -f "$file" ] || continue
+			found=1
+			break
+		done
+		if [ "$found" -eq 1 ]; then
+			echo
+			echo -e "${UNDERLINE}AVAILABLE ALIASES:${RESET}"
+			for file in "$dir"/*; do
+				[ -f "$file" ] || continue
+				local name
+				name="$(basename "$file")"
+				local cmd
+				cmd="$(sed -n '2p' "$file")"
+				printf "  ${BOLD}%-20s${RESET} %s\n" "$name" "$cmd"
+			done
+		fi
+	fi
+}
+
+show_help() {
+    cat << EOF
+Dispatch commands to grouped system utility scripts managed by home-bin.
+
+${UNDERLINE}USAGE${RESET}:
+    ${MMHB_CMD} [OPTIONS] <GROUP> <COMMAND>
+
+${UNDERLINE}DESCRIPTION${RESET}:
+    A command dispatcher for managing various system utilities organized by functional groups.
+    Each group contains related commands for specific tasks.
+
+${UNDERLINE}OPTIONS${RESET}:
+    -h, --help		  Display this help message and exit
+EOF
+
+	print_help_aliases "$(dirname "$hb_bin_dir")/aliases"
+
+	print_help_apps "$(dirname "$hb_bin_dir")/apps"
+
+	print_help_groups "$hb_bin_dir"
+
+	exit "${1:-0}"
+}
+
+cmd_path=""
+group=""
+cmd=""
+cmd_args=()
+while [[ $# -gt 0 ]]; do
+	case $1 in
+		-h|--help)
+			if [ -z "$cmd_path" ]; then
+				show_help 0
+			else
+				cmd_args+=("$1")
+			fi
+			shift
+			;;
+		*)
+			arg="$1"
+			if [ -z "$group" ]; then
+				if [ -d "${hb_bin_dir}/${arg}" ]; then
+					group="$arg"
+				else
+					echo "Error: '$arg' is not a valid group" >&2
+					show_help 1
+				fi
+			elif [ -z "$cmd" ]; then
+				if [ -f "${hb_bin_dir}/${group}/${arg}" ]; then
+					cmd="$arg"
+					cmd_path="${hb_bin_dir}/${group}/${cmd}"
+				else
+					echo "Error: '$arg' is not a valid command ${hb_bin_dir}/${group}/${arg} == ${cmd}" >&2
+					show_help 1
+				fi
+			else
+				cmd_args+=("$arg")
+			fi
+			shift
+			;;
+	esac
+done
+
+if [ -z "$group" ]; then
+	echo "Error: Missing required argument 'group'" >&2
+	show_help 1
+fi
+if [ -z "$cmd" ]; then
+	echo "Error: Missing required argument 'command'" >&2
+	show_help 1
+fi
+
+# echo "Executing command: ${cmd_path} ${cmd_args[*]}"
+"${cmd_path}" "${cmd_args[@]}"

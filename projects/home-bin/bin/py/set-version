@@ -1,0 +1,167 @@
+#!/bin/bash
+
+set -e
+
+source /var/lib/home-bin/.env
+
+show_help() {
+	cat << 'EOF'
+Set the Python version for projects. Takes a from version and to version.
+
+Usage: $0 [options]
+
+Options:
+  -f, --from <version>         The current Python version to match against
+  -t, --to <version>           The new Python version to set
+  -w, --write                  Apply the changes (default: show only)
+  -c, --commit                 After writing, git add/commit/push the changed files
+  -L, --no-locks               Skip generating uv.lock files
+  -h, --help                   Show this help message and exit
+EOF
+	exit "${1:-0}"
+}
+
+checkmark="\e[32m✔\e[0m"
+crossmark="\e[31m-\e[0m"
+ellipsis="\e[34m...\e[0m"
+
+src_dir="${HOME}/src"
+write_change=false
+do_commit=false
+no_locks=false
+version_from=""
+version_to=""
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		--completion)
+			shift
+			curr="$1"
+			if [[ "$curr" == -* ]]; then
+				[ "$write_change" = false ] && echo "flag:--write"
+				[ "$do_commit" = false ] && echo "flag:--commit"
+				[ "$no_locks" = false ] && echo "flag:--no-locks"
+				[ -z "$version_from" ] && echo "flag:--from"
+				[ -z "$version_to" ] && echo "flag:--to"
+				echo "flag:--help"
+			fi
+			exit 0
+			;;
+		-f|--from)
+			version_from="$2"
+			shift 2
+			;;
+		-t|--to)
+			version_to="$2"
+			shift 2
+			;;
+		-w|--write)
+			write_change=true
+			shift
+			;;
+		-c|--commit)
+			do_commit=true
+			shift
+			;;
+		-L|--no-locks)
+			no_locks=true
+			shift
+			;;
+		-h|--help)
+			show_help 0
+			;;
+		*)
+			echo "Error: Unknown argument: $1" >&2
+			show_help 1
+			;;
+	esac
+done
+
+if [[ -z "$version_from" ]]; then
+	echo "Error: --from is required." >&2
+	exit 1
+fi
+if [[ -z "$version_to" ]]; then
+	echo "Error: --to is required." >&2
+	exit 1
+fi
+
+summary_file=$(mktemp)
+
+cd "$src_dir"
+
+for folder in *; do
+	[ -d "$folder" ] || continue
+	(
+		cd "$folder"
+		source "$(dirname "$(realpath "$0")")/.set-dir.sh" --quiet || exit 0
+		if [[ ! -f "pyproject.toml" ]]; then
+			echo -e "\e[2;31m- $folder is missing pyproject.toml file\e[0m"
+			exit 0
+		fi
+
+		current_version="?"
+		if [[ -f ".python-version" ]]; then
+			current_version=$(tr -d '[:space:]' < ".python-version")
+			if [[ "$current_version" != "$version_from" ]]; then
+				echo -e "\e[2;34m... $folder incorrect python version. Have: $current_version Wanted: $version_from\e[0m"
+				exit 0
+			fi
+		fi
+		current_pyproject=$(grep "^requires-python = " "pyproject.toml" || echo "(not set)")
+
+		echo -e "$checkmark $folder"
+		echo "$folder" >> "$summary_file"
+
+		if [[ "$write_change" == true ]]; then
+			sed -i "s/^requires-python = .*/requires-python = \"==${version_to}\"/" "pyproject.toml"
+			echo "$version_to" > ".python-version"
+			echo " > uv sync"
+			uv sync --all-extras --upgrade 2>&1 | sed 's/^/\x1b[2m  /;s/$/\x1b[0m/'
+			if [[ "$no_locks" == false ]]; then
+				echo " > uv-locks"
+				$MMHB_CMD py uv-locks "$folder" 2>&1 | sed 's/^/\x1b[2m  /;s/$/\x1b[0m/'
+			fi
+
+			if [[ "$do_commit" == true ]]; then
+				git_status=$(git status --porcelain | grep -E '(^.{3}| )(uv\.lock(\.[^/]+)?|\.python-version|pyproject\.toml)$' || true)
+				if [[ -n "$git_status" ]]; then
+					echo -e "\e[2m  Changed files to commit:\e[0m"
+					echo "$git_status" | sed 's/^/\x1b[2m    /;s/$/\x1b[0m/'
+					changed_files=$(echo "$git_status" | awk '{print $NF}')
+					branch=$(git rev-parse --abbrev-ref HEAD)
+					echo " > git branch $branch"
+					echo " > git add"
+					git add $changed_files 2>&1 | sed 's/^/\x1b[2m  /;s/$/\x1b[0m/'
+					echo " > git commit"
+					git commit -m "update to python ${version_to}" 2>&1 | sed 's/^/\x1b[2m  /;s/$/\x1b[0m/'
+					echo " > git push"
+					timeout 30 git push origin "$branch" 2>&1 | sed 's/^/\x1b[2m  /;s/$/\x1b[0m/' || echo -e "\e[31m  git push timed out or failed\e[0m"
+				fi
+			fi
+		else
+			echo "  pyproject.toml: requires-python = \"==${version_to}\""
+			echo "  .python-version: ${version_to}"
+		fi
+
+		echo -e "\e[1;32m✔ ✔ $folder\e[0m"
+
+	)
+done
+
+echo ""
+mapfile -t changed_folders < "$summary_file"
+rm -f "$summary_file"
+
+if [[ ${#changed_folders[@]} -eq 0 ]]; then
+	echo "No folders matched."
+elif [[ "$write_change" == true ]]; then
+	echo "Updated ${#changed_folders[@]} folder(s):"
+	echo "  ${changed_folders[*]}"
+else
+	echo "Would update ${#changed_folders[@]} folder(s):"
+	echo "  ${changed_folders[*]}"
+	echo ""
+	echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+	echo "!!! Nothing was written. Pass -w/--write to apply the changes !!!"
+	echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+fi

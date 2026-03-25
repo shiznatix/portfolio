@@ -1,0 +1,15 @@
+[Unit]
+Description=VLC Remote
+Wants=graphical.target
+After=graphical.target
+
+[Service]
+ExecStart=/var/lib/vlr/vlr
+Type=exec
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vlr
+Restart=always
+
+[Install]
+WantedBy=

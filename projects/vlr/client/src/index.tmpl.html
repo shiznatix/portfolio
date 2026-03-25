@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    
+    <title>VLR %NAME%</title>
+    
+    <link rel="manifest" href="/manifest.json?v2">
+    <link rel="apple-touch-icon" href="/icon.png?v2" />
+
+    <script>
+      let didErrorAlert = false;
+
+      window.onerror = function (msg, url, lineNo, columnNo, error) {
+        const string = msg.toLowerCase();
+        const message = [];
+
+        if (string.indexOf('script error') > -1) {
+          message.push('Script Error: See Browser Console for Detail');
+        } else {
+          message.push(...[
+            `Message: ${msg}`,
+            `URL: ${url}`,
+            `Line: ${lineNo}`,
+            `Column: ${columnNo}`,
+            `Error object: ${JSON.stringify(error)}`,
+          ]);
+        }
+        
+
+        document.getElementById('error').innerHTML = message.join('<br />');
+
+        if (!didErrorAlert) {
+          didErrorAlert = true;
+          alert(message.join(' - '));
+        }
+
+        return false;
+      };
+    </script>
+    
+    <script type="text/javascript">
+      CONFIG = %CONFIG%;
+    </script>
+
+    <style>
+      html {
+        padding: 0;
+        /* padding-left: 1px; */
+        overscroll-behavior-y: none;
+        overflow-y: hidden;
+      }
+      body {
+        max-width: 500px;
+        padding: 0;
+        margin: auto;
+        overscroll-behavior-y: none;
+      }
+      [hidden] {
+        display: none !important;
+      }
+      html, body, #app, #app>div {
+        height: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="error"></div>
+    <div id="app"></div>
+  </body>
+</html>

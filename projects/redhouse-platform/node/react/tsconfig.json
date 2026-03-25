@@ -1,0 +1,9 @@
+{
+  "extends": "../tsconfig/tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "jsx": "react-jsx",
+    "lib": ["DOM", "ES2022"]
+  },
+  "include": ["src"]
+}

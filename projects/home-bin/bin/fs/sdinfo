@@ -1,0 +1,184 @@
+#!/bin/bash
+
+source /var/lib/home-bin/bin/.common.sh
+
+show_help() {
+	cat << 'EOF'
+Read and test an SD card.
+
+Usage: $0 [-h|--help]
+EOF
+	exit "${1:-0}"
+}
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		-h|--help)
+			show_help 0
+			;;
+		*)
+			echo "Unknown option: $1" >&2
+			show_help 1
+			;;
+	esac
+done
+
+# permissions
+if [ "$EUID" -ne 0 ]; then
+	echo "This script must be run as root. Please use sudo."
+	exit 1
+fi
+user="${SUDO_USER:-$(logname)}"
+
+media_path="/media/$user"
+mapfile -t dirs < <(find "$media_path" -mindepth 1 -maxdepth 1 -type d 2>/dev/null)
+if [[ ${#dirs[@]} -eq 0 ]]; then
+	echo "No mount points found in $media_path" >&2
+	exit 1
+elif [[ ${#dirs[@]} -eq 1 ]]; then
+	mnt_point="${dirs[0]}"
+else
+	select_option "Select mount point:" "${dirs[@]}"
+	mnt_point="${dirs[$SELECTED_INDEX]}"
+fi
+
+device=$(findmnt -n -o SOURCE "$mnt_point") # e.g. /dev/mmcblk0p1
+block=$(basename "$device" | sed 's/p[0-9]*$//') # e.g. mmcblk0
+
+device_name=$(cat /sys/block/$block/device/name)
+size_sectors=$(cat /sys/block/$block/size)
+size_human=$(lsblk -d -n -o SIZE "/dev/$block")
+
+# detect USB reader info via sysfs
+usb_speed=""
+usb_label=""
+usb_info=""
+sysfs_path=$(udevadm info -q path -n "/dev/$block" 2>/dev/null)
+walk="/sys$sysfs_path"
+while [[ "$walk" != "/sys" && "$walk" != "/" ]]; do
+	if [[ -f "$walk/speed" ]]; then
+		usb_speed=$(cat "$walk/speed")
+		case "$usb_speed" in
+			480)   usb_label="USB 2.0 (480 Mbps  ~25-40 MB/s max)" ;;
+			5000)  usb_label="USB 3.0 (5 Gbps  ~400 MB/s max)" ;;
+			10000) usb_label="USB 3.1 (10 Gbps)" ;;
+			*)     usb_label="USB ${usb_speed} Mbps" ;;
+		esac
+		if [[ -f "$walk/idVendor" && -f "$walk/idProduct" ]]; then
+			vid=$(cat "$walk/idVendor")
+			pid=$(cat "$walk/idProduct")
+			usb_info=$(lsusb | grep -i "${vid}:${pid}" | head -1 | sed 's/^.*ID [^ ]* //')
+		fi
+		break
+	fi
+	walk="${walk%/*}"
+done
+
+echo ""
+printf "  %-14s %s\n" "Mount point:" "$mnt_point"
+printf "  %-14s %s\n" "Device:" "$device"
+printf "  %-14s %s\n" "Block:" "$block"
+printf "  %-14s %s\n" "Name:" "$device_name"
+printf "  %-14s %s (%s sectors)\n" "Size:" "$size_human" "$size_sectors"
+if [[ -n "$usb_speed" ]]; then
+	printf "  %-14s %s\n" "Reader bus:" "$usb_label"
+	[[ -n "$usb_info" ]] && printf "  %-14s %s\n" "Reader:" "$usb_info"
+else
+	printf "  %-14s %s\n" "Reader bus:" "Built-in / non-USB"
+fi
+echo ""
+if ! confirm_prompt "Continue?" "Y"; then
+	exit 0
+fi
+
+# tests
+# sudo apt install fio
+_fio_rate() {
+	local mode="$1"
+	local mbps="$2"
+	if [[ "$mode" == "read" ]]; then
+		if   (( $(echo "$mbps >= 40" | bc -l) )); then echo "Great"
+		elif (( $(echo "$mbps >= 20" | bc -l) )); then echo "Good"
+		elif (( $(echo "$mbps >= 10" | bc -l) )); then echo "Ok"
+		elif (( $(echo "$mbps >=  5" | bc -l) )); then echo "Bad"
+		else echo "Terrible"; fi
+	else
+		if   (( $(echo "$mbps >= 20" | bc -l) )); then echo "Great"
+		elif (( $(echo "$mbps >= 10" | bc -l) )); then echo "Good"
+		elif (( $(echo "$mbps >=  5" | bc -l) )); then echo "Ok"
+		elif (( $(echo "$mbps >=  2" | bc -l) )); then echo "Bad"
+		else echo "Terrible"; fi
+	fi
+}
+
+run_fio() {
+	local mode="$1"
+	local fio_file="$mnt_point/fio_test"
+	touch "$fio_file"
+	local output
+	output=$(fio --name="sdtest-${mode}" --filename="$fio_file" --size=50M --bs=4k --rw="$mode" --iodepth=32 --runtime=60 --time_based --direct=1 2>&1)
+	echo "$output"
+	rm -f "$fio_file"
+	local mbps kbps line
+	line=$(echo "$output" | grep -E "^\s+${mode}:")
+	mbps=$(echo "$line" | sed -n 's/.*(\([0-9.]*\)MB\/s).*/\1/p')
+	if [[ -z "$mbps" ]]; then
+		kbps=$(echo "$line" | sed -n 's/.*(\([0-9.]*\)kB\/s).*/\1/p')
+		mbps=$(awk "BEGIN {printf \"%.1f\", ${kbps:-0} / 1000}")
+	fi
+	if [[ "$mode" == "write" ]]; then
+		fio_write_mbps="$mbps"
+	else
+		fio_read_mbps="$mbps"
+	fi
+}
+
+echo "*** fio write ***"
+run_fio write
+echo "*** fio read ***"
+run_fio read
+
+write_rating=$(_fio_rate write "$fio_write_mbps")
+read_rating=$(_fio_rate read "$fio_read_mbps")
+
+_color_for_rating() {
+	case "$1" in
+		Great)    echo -e "\e[1;32m" ;;  # bold green
+		Good)     echo -e "\e[0;32m" ;;  # green
+		Ok)       echo -e "\e[1;33m" ;;  # bold yellow
+		Bad)      echo -e "\e[0;31m" ;;  # red
+		Terrible) echo -e "\e[1;31m" ;;  # bold red
+	esac
+}
+
+R="\e[0m"
+B="\e[1m"
+echo ""
+echo -e "${B}======================================${R}"
+echo -e "${B}        SPEED TEST RESULTS${R}"
+echo -e "${B}======================================${R}"
+echo -e "  ${B}Write:${R}  $(_color_for_rating "$write_rating")${fio_write_mbps} MB/s  [${write_rating}]${R}"
+echo -e "  ${B}Read: ${R}  $(_color_for_rating "$read_rating")${fio_read_mbps} MB/s  [${read_rating}]${R}"
+echo -e "${B}======================================${R}"
+echo ""
+echo "  Ratings  (Write / Read)"
+echo "   Great   >= 20 MB/s  /  >= 40 MB/s"
+echo "   Good    >= 10 MB/s  /  >= 20 MB/s"
+echo "   Ok      >=  5 MB/s  /  >= 10 MB/s"
+echo "   Bad     >=  2 MB/s  /  >=  5 MB/s"
+echo "   Terrible  < 2 MB/s  /   <  5 MB/s"
+echo -e "${B}======================================${R}"
+
+
+# check for errors in dmesg
+echo
+echo "*** dmesg ***"
+dmesg | grep -i "$block" | tail -n 10
+
+# check for bad blocks
+echo
+echo "*** fsck ***"
+umount "$device" &>/dev/null || true
+fsck -f "$device"
+
+# ensure unmounted at the end
+umount "$device" &>/dev/null || true

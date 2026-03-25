@@ -1,0 +1,28 @@
+[project]
+name = "stream-screen"
+version = "0.1.0"
+requires-python = "==3.13.5"
+dependencies = [
+    "gpiozero>=2.0.1",
+    "luma-lcd>=2.13.0",
+    "numpy>=2.4.2",
+    "pillow>=12.1.1",
+    "rhpy[web]",
+    "spidev>=3.8",
+]
+
+[tool.uv.workspace]
+members = [
+    ".rhpy",
+]
+
+[tool.uv.sources]
+rhpy = { workspace = true, editable = true }
+
+[dependency-groups]
+dev = [
+    "pycairo>=1.29.0",
+    "pygobject-stubs>=2.16.0",
+    "pytest>=9.0.2",
+    "pytest-only>=2.1.1",
+]

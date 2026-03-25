@@ -1,0 +1,17 @@
+[project]
+name = "crayclk"
+version = "0.1.0"
+requires-python = "==3.13.5"
+dependencies = [
+    "adafruit-circuitpython-ht16k33>=4.6.15",
+    "opencv-python>=4.13.0.92",
+    "rhpy[web]",
+]
+
+[tool.uv.workspace]
+members = [
+    ".rhpy",
+]
+
+[tool.uv.sources]
+rhpy = { workspace = true, editable = true }

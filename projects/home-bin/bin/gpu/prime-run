@@ -1,0 +1,52 @@
+#!/bin/bash
+
+show_help() {
+	cat << 'EOF'
+Run a command with Nvidia GPU using prime render offload.
+
+Usage: gpu prime-run [PROGRAM] [ARGS...]
+
+Options:
+  -h, --help         Show this help message and exit
+
+Examples:
+  gpu prime-run firefox
+EOF
+	exit "${1:-0}"
+}
+
+cmd=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --completion)
+            shift
+            curr="$1"
+            if [[ "$curr" == -* && "$cmd" == "" ]]; then
+                echo "flag:--help"
+            elif [[ "$cmd" == "" ]]; then
+                echo "exec:$1"
+            else
+                echo "exec:$cmd $1"
+            fi
+            exit 0
+            ;;
+        -h|--help)
+            show_help 0
+            ;;
+        *)
+			if [[ "$cmd" == "" ]]; then
+				cmd="$1"
+			else
+				cmd="$cmd $1"
+			fi
+            shift
+            ;;
+    esac
+done
+
+# TODO - finish this
+echo ">>>>>${cmd}<<<<<<"
+# __NV_PRIME_RENDER_OFFLOAD=1 \
+# __GLX_VENDOR_LIBRARY_NAME=nvidia \
+# __VK_LAYER_NV_optimus=NVIDIA_only \
+# exec "$@"

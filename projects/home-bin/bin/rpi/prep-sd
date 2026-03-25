@@ -1,0 +1,185 @@
+#!/bin/bash
+
+# set -ex
+set -e
+
+source /var/lib/home-bin/.env
+
+show_help() {
+	cat << 'EOF'
+Prepare a Raspberry Pi SD card with common settings.
+
+Usage: sudo $0 [-h|--help]
+EOF
+	exit "${1:-0}"
+}
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		-h|--help)
+			show_help 0
+			;;
+		*)
+			echo "Unknown option: $1" >&2
+			show_help 1
+			;;
+	esac
+done
+
+log_green() {
+	echo -e "\e[32m$1\e[0m"
+}
+log_red() {
+	echo -e "\e[31m$1\e[0m"
+}
+log_blue() {
+	echo -e "\e[94m$1\e[0m"
+}
+log_yellow() {
+	echo -e "\e[33m$1\e[0m"
+}
+log_orange() {
+	echo -e "\e[38;5;208m$1\e[0m"
+}
+
+mount_control() {
+	local action="$1"
+	local device="$2"
+	local mnt_path=$(mount | grep "$device on " | awk '{print $3}')
+
+	if [ "$action" == "mount" ]; then
+		if [ -n "$mnt_path" ] && [ -d "$mnt_path" ]; then
+			log_blue "$device is already mounted."
+			return
+		fi
+		local output
+		output=$(sudo -u "$user" udisksctl mount -b "$device" 2>&1) || {
+			log_red "Failed to mount $device: $output"
+			exit 1
+		}
+		log_yellow "$output"
+	elif [ "$action" == "unmount" ]; then
+		if [ -z "$mnt_path" ]; then
+			log_blue "$device is not mounted."
+			return
+		fi
+		local output
+		output=$(sudo -u "$user" udisksctl unmount -b "$device" 2>&1) || {
+			log_red "Failed to unmount $device: $output"
+			exit 1
+		}
+		log_yellow "$output"
+	elif [ "$action" == "path" ]; then
+		if [ -z "$mnt_path" ] || [ ! -d "$mnt_path" ]; then
+			log_red "Failed to find mount path for $device"
+			exit 1
+		fi
+		echo "$mnt_path"
+	else
+		log_red "Invalid mount control action: $action"
+		exit 1
+	fi
+}
+
+# permissions
+if [ "$EUID" -ne 0 ]; then
+	log_red "This script must be run as root. Please use sudo."
+	exit 1
+fi
+user="${SUDO_USER:-$(logname)}"
+log_orange "Running as user: $user"
+
+# check for yq
+if ! command -v yq &> /dev/null; then
+	log_yellow "'yq' is not installed. 'yq' is needed to modify YAML files."
+	read -p "Would you like to install 'yq' now? (y/n): " -n 1 -r
+	echo
+	if [[ $REPLY =~ ^[Yy]$ ]]; then
+		log_blue "Installing 'yq'..."
+		apt update
+		apt install -y yq
+		log_green "'yq' installed successfully!"
+	else
+		log_red "'yq' is required to run this script. Exiting."
+		exit 1
+	fi
+fi
+
+# setup
+device_1="/dev/mmcblk0p1"
+device_2="/dev/mmcblk0p2"
+mount_control mount "$device_1"
+mount_control mount "$device_2"
+log_green "Mounted all drives!"
+
+path_1=$(mount_control path "$device_1")
+path_2=$(mount_control path "$device_2")
+log_green "Found path for all drives!"
+
+boot_fs=$(echo -e "$path_1\n$path_2" | grep '/bootfs$')
+root_fs=$(echo -e "$path_1\n$path_2" | grep '/rootfs$')
+log_green "Found path for all partitions!"
+
+# get required variables
+pub_key=$(cat "/home/$user/.ssh/id_ed25519.pub")
+
+# Write changes
+user_data_file="${boot_fs}/user-data"
+if [ ! -f "$user_data_file" ]; then
+	log_red "Error: user_data_file '$user_data_file' does not exist or is not a file."
+	exit 1
+fi
+
+# extract hostname from user-data
+hostname=$(yq -r '.hostname' "$user_data_file")
+if [ -z "$hostname" ] || [ "$hostname" == "null" ]; then
+	log_red "Error: hostname not found in $user_data_file"
+	exit 1
+fi
+log_blue "Extracted hostname: $hostname"
+# find IP address for hostname in MMHB_HOSTS
+ip_address=$(echo "$MMHB_HOSTS" | tr ' ' '\n' | grep "^${hostname}|" | cut -d'|' -f2)
+if [ -z "$ip_address" ]; then
+	log_red "Error: hostname '$hostname' not found in MMHB_HOSTS"
+	exit 1
+fi
+ip_network_gateway="${ip_address%.*}.1"
+log_blue "Found IP address for $hostname: $ip_address"
+
+# add ssh key. NB! `yq` changes formatting and removes comments!
+log_blue "Adding SSH authorized keys to all users in user-data"
+yq -y -i '.users[].ssh_authorized_keys = ["'"$pub_key"'"]' "$user_data_file"
+# ensure `#cloud-config` is at the top of the file
+if ! head -n 1 "$user_data_file" | grep -q "^#cloud-config$"; then
+	log_yellow "Adding #cloud-config header to user-data"
+	sed -i '1s/^/#cloud-config\n/' "$user_data_file"
+fi
+log_green "SSH authorized key added to all users in user-data"
+
+wifi_file="${root_fs}/etc/NetworkManager/conf.d/wifi-powersave.conf"
+log_blue "Disable WiFi power saving $wifi_file"
+cat > "$wifi_file" <<EOF
+[connection]
+# Values are 0 (use default), 1 (ignore/don't touch), 2 (disable) or 3 (enable).
+wifi.powersave = 2
+EOF
+chmod 600 "$wifi_file"
+log_green "Disabled WiFi power saving"
+
+wifi_template_file="/var/lib/home-bin/bin/rpi/wifi-template.yaml"
+wifi_template=$(cat "$wifi_template_file")
+wifi_template=${wifi_template//\{\{IP_ADDRESS\}\}/$ip_address}
+wifi_template=${wifi_template//\{\{GATEWAY\}\}/$ip_network_gateway}
+network_config_file="${boot_fs}/network-config"
+log_blue "Adding WiFi connections to $network_config_file"
+printf '%s\n' "$wifi_template" > "$network_config_file"
+log_green "WiFi connections written to $network_config_file"
+
+log_green "Wrote all files!"
+
+# cleanup
+mount_control unmount "$device_1"
+mount_control unmount "$device_2"
+log_green "Unmounted all drives!"
+
+echo ""
+log_green "GOOD TO GO!"

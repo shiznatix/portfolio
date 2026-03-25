@@ -1,0 +1,74 @@
+#!/bin/bash
+
+set -e
+
+cd ~/src
+
+show_help() {
+    cat << 'EOF'
+Show which Python projects in ~/src have rhpy linked.
+
+Usage: $0 [options]
+
+Options:
+  -u, --update                 Run pip editable install in each matching folder
+  -h, --help                   Show this help message and exit
+EOF
+	exit "${1:-0}"
+}
+
+checkmark="\e[32m✔\e[0m"
+
+update=false
+reinstall=false
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --completion)
+            shift
+            curr="$1"
+            if [[ "$curr" == -* ]]; then
+                [ "$update" = false ] && echo "flag:--update"
+                [ "$reinstall" = false ] && echo "flag:--reinstall"
+                echo "flag:--help"
+            fi
+            exit 0
+            ;;
+        -u|--update)
+            update=true
+            shift
+            ;;
+        --reinstall)
+            reinstall=true
+            shift
+            ;;
+        -h|--help)
+            show_help 0
+            ;;
+        *)
+            echo "Error: Unknown argument: $1" >&2
+            show_help 1
+            ;;
+    esac
+done
+
+for folder in *; do
+    [ -d "$folder" ] || continue
+    (
+        cd "$folder"
+        source "$(dirname "$(realpath "$0")")/.set-dir.sh" || exit 0
+        if ! grep -q "rhpy" "pyproject.toml"; then
+            exit 0
+        fi
+
+        echo -e "$folder $checkmark"
+
+        if [ "$reinstall" = true ] && { [ -e ".rhpy" ] || [ -L ".rhpy" ]; }; then
+            echo "Removing .rhpy for reinstall..."
+            rm -rf ".rhpy"
+        fi
+        if [ ! -L ".rhpy" ] || [ "$update" = true ]; then
+            echo "Installing all dependencies in $folder"
+            uv sync
+        fi
+    )
+done

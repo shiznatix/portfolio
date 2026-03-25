@@ -1,0 +1,88 @@
+#!/bin/bash
+
+source /var/lib/home-bin/.env
+
+show_help() {
+	cat << 'EOF'
+Scan and probe devices on the network.
+
+Usage: $0 [options]
+
+Options:
+  -i, --ip IP   Probe specific IP address (skip network scan)
+  -h, --help    Show this help message
+EOF
+	exit "${1:-0}"
+}
+target_ip=""
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		--completion)
+			shift
+			curr="$1"
+			if [[ "$curr" == -* ]]; then
+				[ -z "$target_ip" ] && echo "flag:--ip"
+				echo "flag:--help"
+			fi
+			exit 0
+			;;
+		-i|--ip)
+			shift
+			if [ -z "$1" ] || [[ "$1" == -* ]]; then
+				echo "Error: -i/--ip requires an IP address." >&2
+				exit 1
+			fi
+			target_ip="$1"
+			shift
+			;;
+		-h|--help)
+			show_help 0
+			;;
+		*)
+			echo "Error: Unknown argument: $1"
+			exit 1
+			;;
+	esac
+done
+
+# Check if nmap is installed
+if ! command -v nmap >/dev/null 2>&1; then
+	echo "nmap is required for port scanning." >&2
+	exit 1
+fi
+
+# Get target IP if not provided via flag
+if [ -z "$target_ip" ]; then
+	echo "Scanning network for devices..."
+	echo ""
+
+	# Run scan with --select to get target IP
+	target_ip=$($MMHB_CMD net scan --select 2>&1 | tee /dev/stderr | tail -n 1)
+fi
+
+# Verify we got a valid IP
+if [[ ! $target_ip =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+	echo "Error: No valid IP address selected." >&2
+	exit 1
+fi
+
+echo ""
+echo "================================================"
+echo "Probing host: $target_ip"
+echo "================================================"
+echo ""
+
+# Run a basic port scan with service detection
+# -Pn: Skip host discovery (assume host is up)
+# -sV: Service version detection
+# -T4: Aggressive timing (faster)
+# -F: Fast mode (scan fewer ports, top 100)
+# --open: Show only open ports
+echo "Running port scan (this may take a minute)..."
+echo ""
+
+sudo nmap -Pn -sV -T4 -F --open "$target_ip"
+
+echo ""
+echo "Probe complete."
+

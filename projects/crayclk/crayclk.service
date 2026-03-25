@@ -1,0 +1,23 @@
+[Unit]
+Description=crayclk
+After=network-online.target
+
+[Service]
+ExecStartPre=-/usr/bin/fuser -k 8000/tcp
+ExecStopPost=-/usr/bin/fuser -k 8000/tcp
+ExecStart=/opt/crayclk/.venv/bin/python -u src/main.py
+Environment=PYTHONUNBUFFERED=1
+Environment=SERVICE_NAME=%p
+User=pi
+WorkingDirectory=/opt/crayclk
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=crayclk
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+KillMode=control-group
+KillSignal=SIGINT
+
+[Install]
+WantedBy=multi-user.target

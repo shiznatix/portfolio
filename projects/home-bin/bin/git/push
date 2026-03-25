@@ -1,0 +1,51 @@
+#!/bin/bash
+
+set -e
+
+show_help() {
+	cat << 'EOF'
+Commit all changes and push the current branch to origin.
+
+Usage: $0 [-h|--help] [COMMIT_MESSAGE]
+
+Arguments:
+  COMMIT_MESSAGE   Commit message (default: "updates")
+EOF
+	exit "${1:-0}"
+}
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		-h|--help)
+			show_help 0
+			;;
+		*)
+			break
+			;;
+	esac
+done
+
+if [ -n "$1" ]; then
+	message="$1"
+else
+	message="updates"
+fi
+
+branch=$(git rev-parse --abbrev-ref HEAD)
+echo "On branch $branch"
+if git rev-parse --verify HEAD >/dev/null 2>&1; then
+	if ! git diff-index --quiet HEAD --; then
+		echo " commit"
+		git commit -am "$message"
+	fi
+else
+	echo " find updated files"
+	if [ -n "$(git ls-files --others --exclude-standard)" ] || [ -n "$(git ls-files)" ]; then
+		echo " add all"
+		git add -A
+		echo " commit"
+		git commit -m "$message"
+	fi
+fi
+
+echo " push"
+git push origin "$branch"

@@ -1,0 +1,83 @@
+import Analytics from '@mui/icons-material/Analytics';
+import CloudDownload from '@mui/icons-material/CloudDownload';
+import Subscriptions from '@mui/icons-material/Subscriptions';
+import Folder from '@mui/icons-material/Folder';
+import Shuffle from '@mui/icons-material/Shuffle';
+import QuestionMark from '@mui/icons-material/QuestionMark';
+import Undo from '@mui/icons-material/Undo';
+import PlayArrow from '@mui/icons-material/PlayArrow';
+import VerticalAlignTop from '@mui/icons-material/VerticalAlignTop';
+import Tag from '@mui/icons-material/Tag';
+import Badge from '@mui/icons-material/Badge';
+import Visibility from '@mui/icons-material/Visibility';
+import VisibilityOff from '@mui/icons-material/VisibilityOff';
+import ArrowUpward from '@mui/icons-material/ArrowUpward';
+import ArrowDownward from '@mui/icons-material/ArrowDownward';
+import RecentActors from '@mui/icons-material/RecentActors';
+import FileDownload from '@mui/icons-material/FileDownload';
+import Star from '@mui/icons-material/Star';
+import LocalPlay from '@mui/icons-material/LocalPlay';
+import CloseFullscreen from '@mui/icons-material/CloseFullscreen';
+import OpenInFull from '@mui/icons-material/OpenInFull';
+import MoreVert from '@mui/icons-material/MoreVert';
+import ArrowBack from '@mui/icons-material/ArrowBack';
+import PermMedia from '@mui/icons-material/PermMedia';
+import InsertDriveFileOutlined from '@mui/icons-material/InsertDriveFileOutlined';
+import FiberNewOutlined from '@mui/icons-material/FiberNewOutlined';
+import CheckBox from '@mui/icons-material/CheckBox';
+import CheckBoxOutlineBlank from '@mui/icons-material/CheckBoxOutlineBlank';
+import Sync from '@mui/icons-material/Sync';
+import Tv from '@mui/icons-material/Tv';
+import Storage from '@mui/icons-material/Storage';
+import DoneAll from '@mui/icons-material/DoneAll';
+import RemoveDone from '@mui/icons-material/RemoveDone';
+import Unpublished from '@mui/icons-material/Unpublished';
+import RestoreIcon from '@mui/icons-material/Restore';
+import SaveIcon from '@mui/icons-material/Save';
+import EditIcon from '@mui/icons-material/Edit';
+import CancelIcon from '@mui/icons-material/Cancel';
+
+export const IconBrowse = Folder;
+export const IconRandom = Shuffle;
+export const IconStatus = Analytics;
+export const IconDownload = CloudDownload;
+// Episode icon ideas:
+//  Slideshow - lame but thin play
+//  OndemandVideo - wide tv play
+//  Dvr - wide tv list
+//  Subscriptions - looks too much like "played count"
+//  LocalPlay - ticket stub
+export const IconEpisode = LocalPlay;
+export const IconUnknown = QuestionMark;
+export const IconPrevious = Undo;
+export const IconPlay = PlayArrow;
+export const IconMaximum = VerticalAlignTop;
+export const IconPlayedCount = Subscriptions;
+export const IconCount = Tag;
+export const IconName = Badge;
+export const IconSeen = Visibility;
+export const IconUnseen = VisibilityOff;
+export const IconSortAsc = ArrowUpward;
+export const IconSortDesc = ArrowDownward;
+export const IconShowName = RecentActors;
+export const IconDownloaded = FileDownload;
+export const IconStarred = Star;
+export const IconMinimize = CloseFullscreen;
+export const IconMaximize = OpenInFull;
+export const IconMoreVertical = MoreVert;
+export const IconBack = ArrowBack;
+export const IconMediaFolder = PermMedia;
+export const IconFileType = InsertDriveFileOutlined;
+export const IconNew = FiberNewOutlined;
+export const IconCheckBoxChecked = CheckBox;
+export const IconCheckBoxUnChecked = CheckBoxOutlineBlank;
+export const IconSync = Sync;
+export const IconTv = Tv;
+export const IconDatabase = Storage;
+export const IconAllChecked = DoneAll;
+export const IconAllUnchecked = RemoveDone;
+export const IconAllCheckedDisabled = Unpublished;
+export const IconRestore = RestoreIcon;
+export const IconSave = SaveIcon;
+export const IconEditName = EditIcon;
+export const IconCancel = CancelIcon;

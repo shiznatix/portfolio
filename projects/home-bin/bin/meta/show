@@ -1,0 +1,208 @@
+#!/bin/bash
+
+show_help() {
+	cat << 'EOF'
+Display file metadata.
+
+Usage: $0 [options] SOURCE
+Options:
+  -q, --quiet		  Suppress non-essential output.
+  -c, --primary-color  Set the primary color name (green, yellow, cyan, red, blue, magenta, white, black).
+  -C, --no-color	   Disable colored output.
+  -r, --recursive	  Recursively process all files in the supplied directory and its subdirectories.
+  -h, --help		   Show this help message
+
+EOF
+	exit "${1:-0}"
+}
+
+# Colors
+BOLD="\033[1m"
+GREEN="\033[0;32m"
+YELLOW="\033[0;33m"
+CYAN="\033[0;36m"
+RED="\033[0;31m"
+BLUE="\033[0;34m"
+MAGENTA="\033[0;35m"
+WHITE="\033[1;37m"
+BLACK="\033[0;30m"
+RESET="\033[0m"
+
+required_tools=("file" "exiftool" "getfattr")
+quiet=false
+prim_color=""
+no_color=false
+recursive=false
+input_files=()
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		--completion)
+			shift
+			curr="$1"
+
+			if [[ "$curr" == -* ]]; then
+				[ "$quiet" = false ] && echo "flag:--quiet"
+				[ -z "$prim_color" ] && [ "$no_color" = false ] && echo "flag:--primary-color"
+				[ "$no_color" = false ] && [ -z "$prim_color" ] && echo "flag:--no-color"
+				[ "$recursive" = false ] && echo "flag:--recursive"
+				echo "flag:--help"
+			else
+				echo "file:"
+			fi
+			exit 0
+			;;
+		-q|--quiet)
+			quiet=true
+			shift
+			;;
+		-c|--primary-color)
+			shift
+			if [ "$1" == "--completion" ]; then
+				echo "word:green"
+				echo "word:yellow"
+				echo "word:cyan"
+				echo "word:red"
+				echo "word:blue"
+				echo "word:magenta"
+				echo "word:white"
+				echo "word:black"
+				exit 0
+			else
+				case "$1" in
+					green) prim_color="$GREEN" ;;
+					yellow) prim_color="$YELLOW" ;;
+					cyan) prim_color="$CYAN" ;;
+					red) prim_color="$RED" ;;
+					blue) prim_color="$BLUE" ;;
+					magenta) prim_color="$MAGENTA" ;;
+					white) prim_color="$WHITE" ;;
+					black) prim_color="$BLACK" ;;
+					*)
+						echo "Error: Invalid color '$1'. Check help for valid options" >&2
+						exit 1
+						;;
+				esac
+				shift
+			fi
+			;;
+		-C|--no-color)
+		no_color=true
+		BOLD=""
+		GREEN=""
+		YELLOW=""
+		CYAN=""
+		RED=""
+		BLUE=""
+		MAGENTA=""
+		WHITE=""
+		BLACK=""
+		RESET=""
+		prim_color=""
+		shift
+		;;
+	-r|--recursive)
+		recursive=true
+		shift
+		;;
+	-h|--help)
+		show_help 0
+		;;
+	*)
+		input_files+=("$1")
+		shift
+		;;
+	esac
+done
+
+if [ -z "$prim_color" ] && [ "$no_color" = false ]; then
+	prim_color="$CYAN"
+fi
+
+declare -A FILES_MAP
+for file in "${input_files[@]}"; do
+	if [ -d "$file" ]; then
+		if [ "$recursive" = true ]; then
+			while IFS= read -r -d '' f; do
+				FILES_MAP["$(realpath "$f")"]=1
+			done < <(find "$file" -type f -print0)
+		else
+			while IFS= read -r -d '' f; do
+				FILES_MAP["$(realpath "$f")"]=1
+			done < <(find "$file" -maxdepth 1 -type f -print0)
+		fi
+	elif [ -f "$file" ]; then
+		FILES_MAP["$(realpath "$file")"]=1
+	else
+		echo "Error: File not found: $file" >&2
+		exit 1
+	fi
+done
+
+FILES=("${!FILES_MAP[@]}")
+
+if [ "${#FILES[@]}" -eq 0 ]; then
+	echo "Error: No files to process." >&2
+	exit 1
+fi
+
+# Check required binaries
+for tool in "${required_tools[@]}"; do
+	if ! command -v "$tool" >/dev/null 2>&1; then
+		echo "Error: Required tool '$tool' is not installed or not in PATH."
+		exit 1
+	fi
+done
+
+# Set indentation based on quiet mode
+INDT="  "
+if [ "$quiet" = true ]; then
+	INDT=""
+fi
+
+for file in "${FILES[@]}"; do
+	if [ "$quiet" = false ] || [ "${#FILES[@]}" -gt 1 ]; then
+		echo -e "${BOLD}File:${RESET} '${file}'"
+	fi
+
+	mime_type="$(file --mime-type -b "$file")"
+	echo -e "${INDT}${prim_color}MIME type:${RESET} ${GREEN}${mime_type}${RESET}"
+
+	if [[ "$mime_type" == image/* || "$mime_type" == video/* ]]; then
+		exif_output=$(
+			exiftool \
+			-GPS:all -EXIF:Artist -EXIF:Copyright -EXIF:Make -EXIF:Model -EXIF:Software \
+			-XMP:Creator -XMP:Rights -XMP:Location -IPTCCore:Creator -IPTCCore:CopyrightNotice \
+			-Composite:GPSPosition -Composite:GPSAltitude \
+			"$file" 2>/dev/null
+		)
+		if [ -z "$exif_output" ]; then
+			if [ "$quiet" = false ]; then
+				echo -e "${INDT}${prim_color}EXIF metadata (privacy-related):${RESET} ${WHITE}(none)${RESET}"
+			fi
+		else
+			echo -e "${INDT}${prim_color}EXIF metadata (privacy-related):${RESET}"
+			echo "$exif_output" | sed -e "s/^/${INDT}  /"
+		fi
+	fi
+
+	attr_output=$(getfattr -d "$file" 2>/dev/null)
+	if [ -z "$attr_output" ]; then
+		if [ "$quiet" = false ]; then
+			echo -e "${INDT}${prim_color}Extended attributes:${RESET} ${WHITE}(none)${RESET}"
+		fi
+	else
+		echo -e "${INDT}${prim_color}Extended attributes:${RESET}"
+		echo "$attr_output" | tail -n +2 |
+			while IFS= read -r line; do
+				echo -e "${INDT}  ${GREEN}${line}${RESET}"
+			done
+	fi
+
+	if [ "$quiet" = false ]; then
+		echo -e "${INDT}${prim_color}File timestamps:${RESET}"
+		stat "$file" | grep -E "^(Modify|Change|Birth|Access:.*[0-9]{4}-)" | while IFS= read -r line; do
+			echo -e "${INDT}  ${GREEN}${line}${RESET}"
+		done
+		echo ""
+	fi
+done

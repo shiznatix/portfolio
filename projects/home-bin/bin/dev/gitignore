@@ -1,0 +1,209 @@
+#!/bin/bash
+
+set -e
+
+show_help() {
+	cat << 'EOF'
+Manage values in .gitignore.
+
+Usage: $0 [add|remove|list] [entry] [options]
+Options:
+  -s, --skip        Skip certain projects
+  -p, --project     Specify a project (can be used multiple times)
+  -d, --dry-run		Show what would be changed without writing files
+  -h, --help		Show this help message
+
+Examples:
+  $0 add node_modules
+  $0 remove node_modules
+  $0 list *rhpy*
+EOF
+	exit "${1:-0}"
+}
+
+src_dir="$HOME/src"
+dry_run=false
+projects=()
+skip_projects=()
+action=""
+entry=""
+
+# Discover all projects with .gitignore files
+discover_all_projects() {
+	while IFS= read -r -d '' dir; do
+		if [ -f "$dir/.gitignore" ]; then
+			echo "$dir"
+		fi
+	done < <(find "$src_dir" -mindepth 1 -maxdepth 1 -type d -print0)
+}
+
+# Expand project pattern and add to array
+# Usage: expand_projects "pattern" array_name
+expand_projects() {
+	local pattern="$1"
+	local array_name="$2"
+
+	# Check if it's a pattern
+	if [[ "$pattern" == *"*"* || "$pattern" == *"?"* || "$pattern" == *"["* ]]; then
+		# Expand pattern
+		local found=0
+		for dir in "$src_dir"/$pattern; do
+			if [ -f "$dir/.gitignore" ]; then
+				eval "$array_name+=(\"$dir\")"
+				found=1
+			fi
+		done
+		if [ $found -eq 0 ]; then
+			echo "Error: No projects matching '$pattern' in ~/src" >&2
+			exit 1
+		fi
+	else
+		# Single project name
+		if [[ -d "$src_dir/$pattern" && -f "$src_dir/$pattern/.gitignore" ]]; then
+			eval "$array_name+=(\"$src_dir/$pattern\")"
+		else
+			echo "Error: '$pattern' is not a valid project in ~/src" >&2
+			exit 1
+		fi
+	fi
+}
+
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		--completion)
+			shift
+			curr="$1"
+			if [[ "$curr" == -* ]]; then
+				[ "$dry_run" = false ] && echo "flag:--dry-run"
+				echo "flag:--skip"
+				echo "flag:--project"
+				echo "flag:--help"
+			elif [[ -z "$action" ]]; then
+				echo "word:add"
+				echo "word:remove"
+				echo "word:list"
+			fi
+			exit 0
+			;;
+		-s|--skip)
+			shift
+			if [[ -z "$1" ]]; then
+				echo "Error: --skip requires a project name" >&2
+				exit 1
+			fi
+			expand_projects "$1" skip_projects
+			shift
+			;;
+		-p|--project)
+			shift
+			if [[ -z "$1" ]]; then
+				echo "Error: --project requires a project name" >&2
+				exit 1
+			fi
+			expand_projects "$1" projects
+			shift
+			;;
+		-d|--dry-run)
+			dry_run=true
+			shift
+			;;
+		-h|--help)
+			show_help 0
+			;;
+		*)
+			# Parse action, entry, or project name
+			if [[ -z "$action" ]]; then
+				# First non-flag arg: check if it's an action
+				if [[ "$1" == "add" || "$1" == "remove" || "$1" == "list" ]]; then
+					action="$1"
+					shift
+				else
+					echo "Error: Invalid action '$1'. Use add, remove, or list." >&2
+					exit 1
+				fi
+			elif [[ -z "$entry" ]]; then
+				# Second non-flag arg: entry
+				entry="$1"
+				shift
+			else
+				echo "Error, unknown keyword argument '$1'" >&2
+				exit 1
+			fi
+			;;
+	esac
+done
+
+# Validate action and entry
+if [[ -z "$action" ]]; then
+	echo "Error: No action specified. Use add, remove, or list." >&2
+	exit 1
+fi
+if [[ -z "$entry" ]]; then
+	echo "Error: No entry specified for $action action" >&2
+	exit 1
+fi
+
+if [ ${#projects[@]} -eq 0 ]; then
+	while read -r dir; do
+		# Skip if in skip list
+		if printf '%s\0' "${skip_projects[@]}" | grep -Fxqz "$dir"; then
+			continue
+		fi
+		projects+=("$dir")
+	done < <(discover_all_projects)
+fi
+
+RED='\e[31m'
+GREEN='\e[32m'
+YELLOW='\e[33m'
+CYAN='\e[36m'
+BOLD='\e[1m'
+NC='\e[0m'
+
+for project in "${projects[@]}"; do
+	gitignore_file="$project/.gitignore"
+	project_name=$(basename "$project")
+
+	case "$action" in
+		add)
+			if grep -v "^[[:space:]]*#" "$gitignore_file" 2>/dev/null | grep -qxF "$entry"; then
+				echo -e "${YELLOW}[=]${NC} $project_name: '$entry' already in .gitignore"
+			else
+				if [ "$dry_run" = true ]; then
+					echo -e "[dry-run] $project_name: Add '$entry' to .gitignore"
+				else
+					echo "$entry" >> "$gitignore_file"
+					echo -e "${BOLD}${GREEN}[+]${NC} $project_name: Added '$entry' to .gitignore"
+				fi
+			fi
+			;;
+		remove)
+			if grep -v "^[[:space:]]*#" "$gitignore_file" 2>/dev/null | grep -qxF "$entry"; then
+				if [ "$dry_run" = true ]; then
+					echo -e "[dry-run] $project_name: Remove '$entry' from .gitignore"
+				else
+					# Use a temp file to avoid issues with in-place editing
+					grep -vxF "$entry" "$gitignore_file" > "$gitignore_file.tmp"
+					mv "$gitignore_file.tmp" "$gitignore_file"
+					echo -e "${BOLD}${RED}[-]${NC} $project_name: Removed '$entry' from .gitignore"
+				fi
+			else
+				echo -e "${YELLOW}[=]${NC} $project_name: '$entry' not found in .gitignore"
+			fi
+			;;
+		list)
+			if [[ -z "$entry" ]]; then
+				echo "  'entry' was not specified" >&2
+				exit 1
+			fi
+
+			# List entries matching pattern (excluding commented lines)
+			matches=$(grep -v "^[[:space:]]*#" "$gitignore_file" 2>/dev/null | grep "$entry" | tr '\n' ' ')
+			if [[ -z "$matches" ]]; then
+				echo -e "${BOLD}${CYAN}$project_name:${NC} (no matches)"
+			else
+				echo -e "${BOLD}${CYAN}$project_name:${NC} $matches"
+			fi
+			;;
+	esac
+done

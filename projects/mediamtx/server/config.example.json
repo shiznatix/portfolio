@@ -1,0 +1,28 @@
+{
+  "cameras": {
+    "picam": {
+      "type": "picam",
+      "outWidth": 1296,
+      "outHeight": 972,
+      "outFramerate": 10,
+      "hflip": true,
+      "cameraCodec": "hardwareH264",
+      "bitrate": 1000000
+    },
+    "picam-secondary": {
+      "type": "picam",
+      "secondaryStream": true,
+      "outFramerate": 10,
+      "outWidth": 160,
+      "outHeight": 128
+    }
+  },
+  "ports": {
+    "api": 9997,
+    "metrics": 9998,
+    "webrtc": 8889,
+    "rtsp": 8554,
+    "rtmp": 1935,
+    "client": 9999
+  }
+}

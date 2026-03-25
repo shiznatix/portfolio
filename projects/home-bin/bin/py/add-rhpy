@@ -1,0 +1,69 @@
+#!/bin/bash
+
+set -e
+
+show_help() {
+	cat << 'EOF'
+Symlink the rhpy into the current Python project.
+
+Usage: $0 [-h|--help|-w|--web]
+
+Options:
+  -w, --web            Link the web extra of rhpy
+  -h, --help           Show this help message and exit
+EOF
+	exit "${1:-0}"
+}
+
+web=false
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		--completion)
+            shift
+            curr="$1"
+            if [[ "$curr" == -* ]]; then
+                echo "flag:--help"
+				echo "flag:--web"
+			elif [ "$web" = false ]; then
+                echo "word:web"
+            fi
+            exit 0
+            ;;
+		-w|--web)
+			web=true
+			shift
+			;;
+		-h|--help)
+			show_help 0
+			;;
+		*)
+			if [ "$web" = false ] && [[ "$1" == "web" ]]; then
+				web=true
+			else
+				echo "Unknown option: $1" >&2
+				show_help 1
+			fi
+			shift
+			;;
+	esac
+done
+
+source "$(dirname "$(realpath "$0")")/.set-dir.sh"
+
+RHPY_SRC_DIR="redhouse-platform/python/libs/rhpy"
+if [ -d "../$RHPY_SRC_DIR" ]; then
+    RHPY_SRC_DIR="../$RHPY_SRC_DIR"
+elif [ -d "../../$RHPY_SRC_DIR" ]; then
+    RHPY_SRC_DIR="../../$RHPY_SRC_DIR"
+else
+    echo "Error: 'rhpy' directory not found in '../$RHPY_SRC_DIR' or '../../$RHPY_SRC_DIR'."
+    exit 1
+fi
+
+ln -sfn "$RHPY_SRC_DIR" .rhpy
+
+if [ "$web" = true ]; then
+	uv add --extra web --editable .rhpy
+else
+	uv add --editable .rhpy
+fi

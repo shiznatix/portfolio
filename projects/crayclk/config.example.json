@@ -1,0 +1,7 @@
+{
+  "noDetectionMode": "impossible",
+  "ports": {
+    "http": 8000
+  },
+  "hostname": "crazy-clock"
+}

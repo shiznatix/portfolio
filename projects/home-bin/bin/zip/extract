@@ -1,0 +1,78 @@
+#!/bin/bash
+
+show_help() {
+	cat << 'EOF'
+Extract a 7z archive (including multi-part).
+
+Usage: $0 [options] SOURCE [DEST]
+
+Options:
+  -d, --delete-source   Delete the source zip file after extraction
+  -h, --help            Show this help message
+EOF
+	exit "${1:-0}"
+}
+source=""
+dest=""
+delete_source=false
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		--completion)
+			shift
+			curr="$1"
+			if [[ "$curr" == -* ]]; then
+				[ "$delete_source" = false ] && echo "flag:--delete-source"
+				echo "flag:--help"
+			elif [ -z "$source" ]; then
+				echo "file:.7z.1"
+				echo "file:.7z.01"
+				echo "file:.7z.001"
+				echo "file:.7z.0001"
+			elif [ -z "$dest" ]; then
+				echo "dir:"
+			fi
+			exit 0
+			;;
+		-d|--delete-source)
+			delete_source=true
+			shift
+			;;
+		-h|--help)
+			show_help 0
+			;;
+		*)
+			if [ -z "$source" ]; then
+				source="$1"
+				shift
+			elif [ -z "$dest" ]; then
+				dest="$1"
+				shift
+			else
+				echo "Error: Unknown argument: $1"
+				exit 1
+			fi
+			;;
+	esac
+done
+
+dest="${dest:-.}"
+
+if [ ! -f "$source" ]; then
+	echo "Error: $source is not a file"
+	exit 1
+fi
+
+echo "7z x "$source" -o"${dest}" -mmt=on -y"
+7z x "$source" -o"${dest}" -mmt=on -y -bb0 -bso0 2> >(sed -n '/%/p')
+# 7z x "$source" -o"${dest}" -mmt=on -y
+if [ $? -ne 0 ]; then
+	echo "Error: Extraction failed"
+	exit 1
+fi
+if [ "$delete_source" = true ]; then
+	source_name_base="${source%.*}.*"
+	echo "Deleting source files matching $source_name_base"
+	rm -f $source_name_base
+fi
+echo "Extraction completed successfully"
+exit 0

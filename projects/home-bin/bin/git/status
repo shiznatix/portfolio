@@ -1,0 +1,182 @@
+#!/bin/bash
+
+home_src_dir="$HOME/src"
+
+show_help() {
+	cat << 'EOF'
+Show git status light version.
+
+Usage: $0 [options]
+
+Options:
+  -a, --all       Show all repository statuses in ~/src
+  -v, --verbose   Show detailed status information
+  -h, --help      Show this help message
+EOF
+	exit "${1:-0}"
+}
+
+# Colors
+BOLD="\033[1m"
+GREEN="\033[32m"
+YELLOW="\033[33m"
+CYAN="\033[36m"
+RED="\033[31m"
+BLUE="\033[34m"
+MAGENTA="\033[35m"
+WHITE="\033[1;37m"
+BLACK="\033[30m"
+RESET="\033[0m"
+RESET_FG="\033[39m"
+BG_ODD=""
+BG_EVEN="\033[48;5;234m"
+
+if [ -d ".git" ]; then
+	source_dir="$(pwd -P)"
+else
+	source_dir="$home_src_dir"
+fi
+
+verbose=false
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		--completion)
+			shift
+			curr="$1"
+			if [[ "$curr" == -* ]]; then
+				echo "flag:--all"
+				[ "$verbose" = false ] && echo "flag:--verbose"
+				echo "flag:--help"
+			fi
+			exit 0
+			;;
+		-a|--all)
+			source_dir="$home_src_dir"
+			shift
+			;;
+		-v|--verbose)
+			verbose=true
+			shift
+			;;
+		-h|--help)
+			show_help 0
+			;;
+		*)
+			echo "Error: Unknown argument: $1"
+			exit 1
+			;;
+	esac
+done
+
+repo_dirs=()
+
+if [ "$source_dir" = "$home_src_dir" ]; then
+	# collect all immediate subdirectories of home_src_dir
+	while IFS= read -r -d '' dir; do
+		repo_dirs+=("$dir")
+	done < <(find "$source_dir" -mindepth 1 -maxdepth 1 -type d -print0 | sort -z)
+else
+	repo_dirs+=("$source_dir")
+fi
+
+if [ ${#repo_dirs[@]} -eq 1 ]; then
+	verbose=true
+fi
+
+rows_repo=()
+rows_branch=()
+rows_summary=()
+rows_status=()
+rows_clean=()
+
+for repo_dir in "${repo_dirs[@]}"; do
+	if [ -d "$repo_dir/.git" ]; then
+		cd "$repo_dir"
+		status_output=$(git status --short)
+		repo_name=$(basename "$repo_dir")
+		branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")
+
+		# Check for unpushed commits
+		unpushed=0
+		upstream=$(git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null || true)
+		if [[ -n "$upstream" ]]; then
+			unpushed=$(git rev-list "${upstream}..HEAD" 2>/dev/null | wc -l | tr -d '[:space:]')
+		fi
+
+		if [ -z "$status_output" ] && [ "$unpushed" -eq 0 ]; then
+			rows_repo+=("$repo_name")
+			rows_branch+=("$branch")
+			rows_summary+=("")
+			rows_status+=("")
+			rows_clean+=("1")
+		else
+			modified=$(echo "$status_output" | grep -c "^ M" || true)
+			added=$(echo "$status_output" | grep -c "^A " || true)
+			deleted=$(echo "$status_output" | grep -c "^ D" || true)
+			untracked=$(echo "$status_output" | grep -c "^??" || true)
+
+			summary=""
+			[ "$modified" -gt 0 ] && summary="${summary}${BLUE}${modified} modified${RESET_FG}, "
+			[ "$added" -gt 0 ] && summary="${summary}${GREEN}${added} added${RESET_FG}, "
+			[ "$deleted" -gt 0 ] && summary="${summary}${RED}${deleted} deleted${RESET_FG}, "
+			[ "$untracked" -gt 0 ] && summary="${summary}${CYAN}${untracked} untracked${RESET_FG}, "
+			[ "$unpushed" -gt 0 ] && summary="${summary}${MAGENTA}${unpushed} unpushed${RESET_FG}, "
+			summary="${summary%, }"
+
+			rows_repo+=("$repo_name")
+			rows_branch+=("$branch")
+			rows_summary+=("$summary")
+			rows_status+=("$status_output")
+			rows_clean+=("0")
+		fi
+	fi
+done
+
+# Find max column widths for alignment
+max_repo=0
+max_branch=0
+for i in "${!rows_repo[@]}"; do
+	[[ ${#rows_repo[$i]} -gt $max_repo ]] && max_repo=${#rows_repo[$i]}
+	[[ ${#rows_branch[$i]} -gt $max_branch ]] && max_branch=${#rows_branch[$i]}
+done
+
+# Print rows: clean repos first, then dirty
+row_idx=0
+for pass in clean dirty; do
+	for i in "${!rows_repo[@]}"; do
+		[[ "$pass" == "dirty" && "${rows_clean[$i]}" == "1" ]] && continue
+		[[ "$pass" == "clean" && "${rows_clean[$i]}" == "0" ]] && continue
+
+		(( row_idx % 2 == 0 )) && bg="$BG_EVEN" || bg="$BG_ODD"
+		(( row_idx++ )) || true
+
+		name="${rows_repo[$i]}"
+		padding=$(printf '%*s' $((max_repo - ${#name})) '')
+		branch="${rows_branch[$i]}"
+		branch_padding=$(printf '%*s' $((max_branch - ${#branch})) '')
+		[[ "$branch" == "main" ]] && branch_color="$CYAN" || branch_color="$YELLOW"
+
+		if [ "${rows_clean[$i]}" = "1" ]; then
+			echo -e "${bg}${name}${padding}  ${branch_color}(${branch})${RESET}${bg}${branch_padding}  ${GREEN}✓ clean${RESET}"
+		else
+			summary_display="${rows_summary[$i]}"
+			echo -e "${bg}${BOLD}${YELLOW}${name}${RESET}${bg}${padding}  ${branch_color}(${branch})${RESET}${bg}${branch_padding}  ${summary_display}${RESET}"
+			if [ "$verbose" = true ] && [ -n "${rows_status[$i]}" ]; then
+				echo "${rows_status[$i]}" | while IFS= read -r line; do
+					prefix="${line:0:2}"
+					color="$WHITE"
+					if [[ "$prefix" == " M" ]]; then
+						color="$BLUE"
+					elif [[ "$prefix" == "A " ]]; then
+						color="$GREEN"
+					elif [[ "$prefix" == " D" ]]; then
+						color="$RED"
+					elif [[ "$prefix" == "??" ]]; then
+						color="$CYAN"
+					fi
+					echo -e "${bg}  ${color}${line}${RESET}"
+				done
+			fi
+		fi
+	done
+done

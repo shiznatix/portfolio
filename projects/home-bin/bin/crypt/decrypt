@@ -1,0 +1,246 @@
+#!/bin/bash
+
+source /var/lib/home-bin/.env
+# Global variables
+reuse_passphrase=false
+auto_yes=false
+cached_passphrase=""
+
+# Signal handler for Ctrl+C
+cleanup_and_exit() {
+	echo
+	echo "Operation interrupted. Cleaning up..."
+	# Clear cached passphrase for security
+	cached_passphrase=""
+	exit 130
+}
+
+# Set up signal handling
+trap cleanup_and_exit SIGINT SIGTERM
+
+# Function to show help
+show_help() {
+	cat << 'EOF'
+Decrypt GPG-encrypted files
+
+USAGE:
+	${MMHB_CMD} crypt decrypt [OPTIONS] <file.gpg|pattern>...
+
+DESCRIPTION:
+	Decrypts one or more GPG-encrypted files. Supports glob patterns to decrypt
+	multiple files at once. Automatically handles zip file extraction after
+	decryption.
+
+OPTIONS:
+	-y, --yes	   Automatically answer "yes" to all prompts (unzip files,
+					delete zip archives, reuse passphrase for multiple files)
+	-h, --help	  Show this help message and exit
+
+BEHAVIOR:
+	- For .zip files after decryption, prompts to unzip and delete archive
+	- For multiple files, asks whether to reuse passphrase
+	- With -y flag, automatically performs all actions without prompting
+	- Skips files where the destination already exists
+
+EOF
+	exit "${1:-0}"
+}
+
+# Parse command line flags from all arguments
+files=()
+while [[ $# -gt 0 ]]; do
+	case $1 in
+		--completion)
+			shift
+			curr="$1"
+			if [[ "$curr" == -* ]]; then
+				[ "$auto_yes" = false ] && echo "flag:--yes"
+				echo "flag:--help"
+			else
+				echo "file:.gpg"
+			fi
+			exit 0
+			;;
+		-y|--yes)
+			auto_yes=true
+			shift
+			;;
+		-h|--help)
+			show_help 0
+			;;
+		-*)
+			echo "Unknown option: $1" >&2
+			show_help 2
+			;;
+		*)
+			# Collect non-flag arguments
+			files+=("$1")
+			shift
+			;;
+	esac
+done
+
+# Reset positional parameters to the collected files
+set -- "${files[@]}"
+
+if [ $# -eq 0 ]; then
+	echo "Error: No input files specified." >&2
+	show_help 2
+fi
+
+# Function to get passphrase for reuse
+get_cached_passphrase() {
+	if [ -z "$cached_passphrase" ]; then
+		echo
+		echo "=============================================="
+		echo "🔐 PASSPHRASE REQUIRED"
+		echo "=============================================="
+		echo "Enter passphrase for all files:"
+		echo "=============================================="
+		read -s cached_passphrase
+		echo
+		echo "✓ Passphrase received"
+		echo
+
+		# Ask if user wants to see the passphrase to confirm
+		read -r -p "Show passphrase to confirm it's correct? [y/N] " show_pass
+		case "$show_pass" in
+			[Yy]* )
+				echo
+				echo "=============================================="
+				echo "Your passphrase is:"
+			echo "\"$cached_passphrase\""
+				echo "=============================================="
+				read -r -p "Press Enter to continue (passphrase will be hidden)..."
+				# Clear the screen lines showing the passphrase
+				echo -e "\033[4A\033[J"
+				;;
+		esac
+
+		echo "Continuing with operations..."
+		echo
+	fi
+}
+
+# Function to decrypt a single file
+decrypt_file() {
+	local file="$1"
+	local output_file="${file%.gpg}"
+
+	if [ -e "$output_file" ]; then
+		echo "Destination '$output_file' already exists. Skipping '$file'." >&2
+		return 1
+	fi
+
+	echo "Decrypting '$file'..."
+
+	# Use different GPG options based on passphrase reuse setting
+	if [ "$reuse_passphrase" = true ]; then
+		# Use cached passphrase
+		get_cached_passphrase
+		if ! echo "$cached_passphrase" | gpg --batch --yes --passphrase-fd 0 --decrypt --quiet "$file" > "$output_file"; then
+			echo "Decryption failed for '$file'." >&2
+			rm -f -- "$output_file"
+			return 1
+		fi
+	else
+		# No caching - prompt each time
+		if ! gpg --pinentry-mode ask --no-symkey-cache --decrypt --quiet "$file" > "$output_file"; then
+			echo "Decryption failed for '$file'." >&2
+			rm -f -- "$output_file"
+			return 1
+		fi
+	fi
+
+	echo "Decrypted to '$output_file'."
+
+	if [[ "$output_file" == *.zip ]]; then
+		if [ "$auto_yes" = true ]; then
+			echo "File '$output_file' is a zip archive. Unzipping..."
+			yn="Y"
+		else
+			read -r -p "File '$output_file' is a zip archive. Unzip now? [Y/n] " yn
+		fi
+		case "$yn" in
+			"" | [!Nn]* )
+				if ! unzip -o -- "$output_file"; then
+					echo "Unzip failed for '$output_file'." >&2
+					return 1
+				fi
+				if [ "$auto_yes" = true ]; then
+					echo "Deleting zip archive '$output_file'..."
+					yn2="Y"
+				else
+					read -r -p "Delete zip archive '$output_file'? [Y/n] " yn2
+				fi
+				case "$yn2" in
+					"" | [!Nn]* )
+						if ! rm -f -- "$output_file"; then
+							echo "Failed to remove '$output_file'." >&2
+							return 1
+						fi
+						;;
+					* ) ;;
+				esac
+
+				echo "Finished decrypting and unzipping '$output_file'"
+				;;
+			*)
+				echo "Finished decrypting to '$output_file'"
+				;;
+		esac
+	fi
+	return 0
+}
+
+# Process all arguments (files expanded by shell)
+success_count=0
+fail_count=0
+total_count=$#
+
+# Ask about passphrase reuse if processing multiple files
+if [ $total_count -gt 1 ]; then
+	echo "Processing $total_count files."
+	if [ "$auto_yes" = true ]; then
+		echo "Reusing passphrase for all files..."
+		reuse_passphrase=true
+		yn="Y"
+	else
+		read -r -p "Reuse passphrase for all files? [Y/n] " yn
+	fi
+	case "$yn" in
+		"" | [!Nn]* )
+			reuse_passphrase=true
+			echo "Will reuse passphrase for all files."
+			;;
+		* )
+			echo "Will prompt for passphrase for each file."
+			;;
+	esac
+	echo
+fi
+
+for file in "$@"; do
+	if [ -f "$file" ]; then
+		if decrypt_file "$file"; then
+			((success_count++))
+		else
+			((fail_count++))
+		fi
+	else
+		echo "Skipping '$file' (not a regular file)" >&2
+	fi
+done
+
+# Clear cached passphrase if we used passphrase reuse
+if [ "$reuse_passphrase" = true ]; then
+	cached_passphrase=""
+fi
+
+if [ $total_count -gt 1 ]; then
+	echo "Processed $success_count of $total_count files successfully."
+fi
+if [ $fail_count -gt 0 ]; then
+	echo "$fail_count file(s) failed to decrypt." >&2
+	exit 1
+fi

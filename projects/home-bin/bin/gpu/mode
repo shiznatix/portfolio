@@ -1,0 +1,68 @@
+#!/bin/bash
+
+show_help() {
+	cat << 'EOF'
+Set Nvidia prime mode.
+
+Usage: gpu mode [OPTIONS] [nvidia|intel|on-demand|persistance|persistance-off]
+
+Options:
+  -h, --help         Show this help message and exit
+
+Examples:
+  gpu mode nvidia
+EOF
+	exit "${1:-0}"
+}
+
+set_mode=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --completion)
+            shift
+            curr="$1"
+            if [[ "$curr" == -* ]]; then
+                echo "flag:--help"
+            else
+                echo "word:nvidia"
+                echo "word:intel"
+                echo "word:on-demand"
+                echo "word:persistance"
+                echo "word:persistance-off"
+            fi
+            exit 0
+            ;;
+        -h|--help)
+            show_help 0
+            ;;
+        *)
+            if [[ -n "$set_mode" ]]; then
+                echo "Error: Multiple modes specified: $set_mode and $1" >&2
+                show_help 1
+            fi
+            if [[ "$1" != "nvidia" && "$1" != "intel" && "$1" != "on-demand" && "$1" != "persistance" && "$1" != "persistance-off" ]]; then
+                echo "Error: Invalid mode: $1" >&2
+                show_help 1
+            fi
+            set_mode="$1"
+            shift
+            ;;
+    esac
+done
+
+if [[ -z "$set_mode" ]]; then
+    echo "Error: No mode specified" >&2
+    exit 1
+fi
+
+if [[ "$set_mode" == "nvidia" || "$set_mode" == "intel" || "$set_mode" == "on-demand" ]]; then
+    sudo prime-select "$set_mode"
+elif [[ "$set_mode" == "persistance" ]]; then
+    sudo nvidia-smi -pm 1
+    sudo systemctl enable nvidia-persistenced
+    sudo systemctl start nvidia-persistenced
+elif [[ "$set_mode" == "persistance-off" ]]; then
+    sudo nvidia-smi -pm 0
+    sudo systemctl stop nvidia-persistenced
+    sudo systemctl disable nvidia-persistenced
+fi

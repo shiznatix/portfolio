@@ -1,0 +1,47 @@
+#!/bin/bash
+
+show_help() {
+	cat << 'EOF'
+List the largest files and folders.
+
+Usage: $0 [-h|--help] [DIR]
+EOF
+	exit "${1:-0}"
+}
+
+# Parse arguments
+if [ "$1" = "--completion" ]; then
+	echo "dir:"
+	exit 0
+fi
+
+root_dir=""
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		--completion)
+			if [ -z "$root_dir" ]; then
+				echo "dir:"
+			fi
+			exit 0
+			;;
+		-h|--help)
+			show_help 0
+			;;
+		*)
+			if [ -n "$root_dir" ]; then
+				echo "Error: Root directory already provided"
+				exit 1
+			fi
+
+			root_dir="$1"
+			shift
+			;;
+	esac
+done
+
+if [ -z "$root_dir" ]; then
+	root_dir="./"
+fi
+
+du -h --max-depth=1 "$root_dir" | sort -hr | head -n 20
+find "$root_dir" -type f -size +100M -exec ls -lh {} + 2>/dev/null | sort -k5 -hr | head -n 20

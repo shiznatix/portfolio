@@ -1,0 +1,329 @@
+#!/bin/bash
+
+source /var/lib/home-bin/.env
+# Global variables
+reuse_passphrase=false
+auto_yes=false
+cached_passphrase=""
+
+# Signal handler for Ctrl+C
+cleanup_and_exit() {
+	echo
+	echo "Operation interrupted. Cleaning up..."
+	# Clear cached passphrase for security
+	cached_passphrase=""
+	exit 130
+}
+
+# Set up signal handling
+trap cleanup_and_exit SIGINT SIGTERM
+
+# Function to show help
+show_help() {
+	cat << 'EOF'
+Encrypt files and directories with GPG
+
+USAGE:
+	${MMHB_CMD} crypt encrypt [OPTIONS] <file-or-directory|pattern>...
+
+DESCRIPTION:
+	Encrypts one or more files or directories using GPG symmetric encryption
+	(AES256). Directories are automatically zipped before encryption. Supports
+	glob patterns to encrypt multiple files at once.
+
+OPTIONS:
+	-y, --yes	   Automatically answer "yes" to all prompts (zip directories,
+					delete original files/directories, reuse passphrase)
+	-h, --help	  Show this help message and exit
+
+EXAMPLES:
+	encrypt document.txt
+		Encrypt a single file
+
+	encrypt mydir/
+		Zip and encrypt a directory
+
+	encrypt *.txt
+		Encrypt all .txt files in current directory
+
+	encrypt -y backup_files/
+		Encrypt directory, auto-answering "yes" to all prompts
+
+	encrypt /path/to/files/*
+		Encrypt all files in specified directory
+
+BEHAVIOR:
+	- Directories are zipped before encryption (with confirmation)
+	- Original files/directories can be deleted after encryption (with confirmation)
+	- For multiple files, asks whether to use same passphrase for all
+	- With -y flag, automatically performs all actions without prompting
+	- Skips files that appear to already be encrypted (.gpg extension)
+	- Uses AES256 encryption algorithm
+
+EOF
+	exit "${1:-0}"
+}
+
+if [ $# -eq 0 ]; then
+	show_help 2
+fi
+
+# Parse command line flags from all arguments
+files=()
+while [[ $# -gt 0 ]]; do
+	case $1 in
+		--completion)
+			shift
+			curr="$1"
+			if [[ "$curr" == -* ]]; then
+				[ "$auto_yes" = false ] && echo "flag:--yes"
+				echo "flag:--help"
+			else
+				echo "file:"
+			fi
+			exit 0
+			;;
+		-y|--yes)
+			auto_yes=true
+			shift
+			;;
+		-h|--help)
+			show_help 0
+			;;
+		-*)
+			show_help 2
+			;;
+		*)
+			# Collect non-flag arguments
+			files+=("$1")
+			shift
+			;;
+	esac
+done
+
+# Reset positional parameters to the collected files
+set -- "${files[@]}"
+
+# Function to get passphrase for reuse
+get_cached_passphrase() {
+	if [ -z "$cached_passphrase" ]; then
+		echo
+		echo "=============================================="
+		echo "🔐 PASSPHRASE REQUIRED"
+		echo "=============================================="
+		echo "Enter passphrase for all files:"
+		echo "=============================================="
+		read -s cached_passphrase
+		echo
+		echo "✓ Passphrase received"
+		echo
+
+		# Ask if user wants to see the passphrase to confirm
+		read -r -p "Show passphrase to confirm it's correct? [y/N] " show_pass
+		case "$show_pass" in
+			[Yy]* )
+				echo
+				echo "=============================================="
+				echo "Your passphrase is:"
+			echo "\"$cached_passphrase\""
+				echo "=============================================="
+				read -r -p "Press Enter to continue (passphrase will be hidden)..."
+				# Clear the screen lines showing the passphrase
+				echo -e "\033[4A\033[J"
+				;;
+		esac
+
+		echo "Continuing with operations..."
+		echo
+	fi
+}
+
+# Function to encrypt a single file or directory
+encrypt_item() {
+	local file="$1"
+	local dir=""
+
+	if [ -d "$file" ]; then
+		dir="$file"
+		dir="${dir%/}/"
+		# strip leading/trailing slashes and ./ patterns so only internal separators are converted
+		local zip_name="$file"
+		# Remove leading ./ patterns
+		while [[ "$zip_name" == ./* ]]; do zip_name="${zip_name#./}"; done
+		# Remove leading / characters
+		while [ "${zip_name#/}" != "$zip_name" ]; do zip_name="${zip_name#/}"; done
+		# Remove trailing / characters
+		while [ "${zip_name%/}" != "$zip_name" ]; do zip_name="${zip_name%/}"; done
+		# Convert remaining slashes to underscores
+		zip_name="${zip_name//\//_}.zip"
+
+		if [ -e "$zip_name" ]; then
+			echo "'$zip_name' already exists. Skipping '$file'." >&2
+			return 1
+		fi
+
+		if [ "$auto_yes" = true ]; then
+			echo "'$dir' is a directory. Zipping before encrypting..."
+			yn="Y"
+		else
+			read -r -p "'$dir' is a directory. Zip it before encrypting? [Y/n] " yn
+		fi
+		case "$yn" in
+			"" | [!Nn]* )
+				if ! zip -r "$zip_name" -- "$dir"; then
+					echo "Failed to create zip for '$file'" >&2
+					return 1
+				fi
+				file="$zip_name"
+				;;
+			* )
+				echo "Only files may be encrypted. Skipping '$file'." >&2
+				return 1
+				;;
+		esac
+	fi
+
+	# ensure the target is a regular file
+	if [ ! -f "$file" ]; then
+		echo "'$file' is not a regular file. Skipping." >&2
+		return 1
+	fi
+
+	# Check if already encrypted
+	if [[ "$file" == *.gpg ]]; then
+		echo "'$file' appears to already be encrypted. Skipping." >&2
+		return 1
+	fi
+
+	echo "Encrypting '$file'..."
+
+	# Use different GPG options based on passphrase reuse setting
+	if [ "$reuse_passphrase" = true ]; then
+		# Use cached passphrase
+		get_cached_passphrase
+		if ! echo "$cached_passphrase" | gpg --batch --yes --passphrase-fd 0 --cipher-algo AES256 -c -- "$file"; then
+			echo "gpg failed for '$file'" >&2
+			return 1
+		fi
+	else
+		# No caching - prompt each time
+		if ! gpg --pinentry-mode ask --no-symkey-cache --cipher-algo AES256 -c -- "$file"; then
+			echo "gpg failed for '$file'" >&2
+			return 1
+		fi
+	fi
+
+	echo "Encrypted to '$file.gpg'."
+
+	if [ "$auto_yes" = true ]; then
+		echo "Deleting original '$file'..."
+		yn="Y"
+	else
+		read -r -p "Delete original '$file'? [Y/n] " yn
+	fi
+	case "$yn" in
+		"" | [!Nn]* )
+			if ! rm -f -- "$file"; then
+				echo "Failed to remove '$file'." >&2
+				return 1
+			fi
+			;;
+		* ) ;;
+	esac
+
+	if [ -n "$dir" ] && [ -d "$dir" ]; then
+		if [ "$auto_yes" = true ]; then
+			echo "Deleting original directory '$dir'..."
+			yn="Y"
+		else
+			read -r -p "Delete original directory '$dir'? [y/N] " yn
+		fi
+		case "$yn" in
+			[Yy]* )
+				if ! rm -rf -- "$dir"; then
+					echo "Failed to remove directory '$dir'." >&2
+					return 1
+				fi
+				;;
+			* ) ;;
+		esac
+	fi
+
+	return 0
+}
+
+# Process all arguments (files/directories expanded by shell)
+success_count=0
+total_count=$#
+
+# Ask about passphrase reuse if processing multiple files
+if [ $total_count -gt 1 ]; then
+	echo "Processing $total_count items."
+	if [ "$auto_yes" = true ]; then
+		echo "Using same passphrase for all files..."
+		reuse_passphrase=true
+		yn="Y"
+	else
+		read -r -p "Use same passphrase for all files? [Y/n] " yn
+	fi
+	case "$yn" in
+		"" | [!Nn]* )
+			reuse_passphrase=true
+			echo "Will use same passphrase for all files."
+			# Get the passphrase upfront to avoid waiting after zip operations
+			get_cached_passphrase
+			;;
+		* )
+			echo "Will prompt for passphrase for each file."
+			;;
+	esac
+	echo
+	echo "Found ${total_count} items to process"
+elif [ $total_count -gt 1 ]; then
+	echo "Found ${total_count} items to process"
+fi
+
+# Get passphrase upfront if we'll need it (avoids waiting after zip operations)
+if [ "$reuse_passphrase" = true ]; then
+	# Already got it above for multiple files
+	:
+else
+	# For single files or when not reusing, check if any items are directories
+	# that will need zipping, and get passphrase upfront
+	has_directories=false
+	for item in "$@"; do
+		if [ -d "$item" ]; then
+			has_directories=true
+			break
+		fi
+	done
+
+	if [ "$has_directories" = true ]; then
+		echo "Found directories that will be zipped. Getting passphrase upfront..."
+		get_cached_passphrase
+		# Temporarily set reuse mode to use the cached passphrase
+		reuse_passphrase=true
+	fi
+fi
+
+for item in "$@"; do
+	if [ $total_count -gt 1 ]; then
+		echo "--- Processing '$item' ---"
+	fi
+	if encrypt_item "$item"; then
+		((success_count++))
+	fi
+	if [ $total_count -gt 1 ]; then
+		echo
+	fi
+done
+
+# Clear cached passphrase if we used passphrase reuse
+if [ "$reuse_passphrase" = true ]; then
+	cached_passphrase=""
+fi
+
+if [ $total_count -gt 1 ]; then
+	echo "Processed $success_count of $total_count items successfully."
+fi
+echo "Done."

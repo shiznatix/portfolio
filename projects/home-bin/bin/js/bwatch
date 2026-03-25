@@ -1,0 +1,92 @@
+#!/bin/bash
+
+set -e
+
+show_help() {
+	cat << 'EOF'
+Run npm build:watch with notifications.
+
+Usage: $0 [-h|--help] [-s|--on-success <command>]
+
+Options:
+  -h, --help                Show this help message
+  -s, --on-success <cmd>    Run <cmd> when "Found 0 errors." is received
+EOF
+	exit "${1:-0}"
+}
+
+ON_SUCCESS=""
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		-h|--help)
+			show_help 0
+			;;
+		-s|--on-success)
+			if [[ -z "${2:-}" ]]; then
+				echo "Error: --on-success requires a command argument" >&2
+				show_help 1
+			fi
+			ON_SUCCESS="$2"
+			shift
+			;;
+		*)
+			echo "Unknown option: $1" >&2
+			show_help 1
+			;;
+	esac
+	shift
+done
+
+LOCKED=false
+
+set_title() {
+	printf "\033]0;%s\007" "$1"
+}
+
+flash() {
+	printf '\a'
+}
+
+double_flash() {
+	local stime=${1:-0.2}
+	flash
+	sleep "$stime"
+	flash
+}
+
+on_start() {
+	set_title "... tsc"
+	flash
+}
+
+on_done() {
+	set_title "$1 tsc"
+	double_flash
+	sleep 1.5
+	set_title "build watch"
+}
+
+npm run build:watch | while IFS= read -r line; do
+	echo "$line"
+
+	if [ "$LOCKED" = true ]; then
+		continue
+	fi
+
+	LOCKED=true
+
+	if [[ "$line" == *"Found 0 errors."* ]]; then
+		on_done "✔"
+		if [[ -n "$ON_SUCCESS" ]]; then
+			echo "Running '\"$ON_SUCCESS\"' ..."
+			eval "$ON_SUCCESS" && _exit_code=$? || _exit_code=$?
+			echo "on-success: \"$ON_SUCCESS\" exited with $_exit_code"
+		fi
+	elif [[ "$line" == *"error"* ]]; then
+		on_done "✖"
+	else
+		on_start
+	fi
+
+	LOCKED=false
+done

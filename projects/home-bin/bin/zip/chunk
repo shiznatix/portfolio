@@ -1,0 +1,89 @@
+#!/bin/bash
+
+source /var/lib/home-bin/.env
+
+show_help() {
+	cat << 'EOF'
+Split a file or directory into a multi-part 7z archive.
+
+Usage: $0 [options] SOURCE [DEST]
+
+Options:
+  -s, --size SIZE   Set the maximum size for each chunk (e.g., 2000m)
+  -h, --help        Show this help message
+EOF
+	exit "${1:-0}"
+}
+source=""
+dest=""
+size=""
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		--completion)
+			shift
+			curr="$1"
+			if [[ "$curr" == -* ]]; then
+				[ -z "$size" ] && echo "flag:--size"
+				echo "flag:--help"
+			elif [ -z "$source" ]; then
+				echo "file:"
+			elif [ -z "$dest" ]; then
+				echo "dir:"
+			fi
+			exit 0
+			;;
+		-s|--size)
+			shift
+			size="$1"
+			shift
+			;;
+		-h|--help)
+			show_help 0
+			;;
+		*)
+			if [ -z "$source" ]; then
+				source="$1"
+				shift
+			elif [ -z "$dest" ]; then
+				dest="$1"
+				shift
+			else
+				echo "Error: Unknown argument: $1"
+				exit 1
+			fi
+			;;
+	esac
+done
+
+if [ ! -f "$source" ] && [ ! -d "$source" ]; then
+	echo "Error: $source is not a file or directory"
+	exit 1
+fi
+
+source_name_base="$(basename "$(realpath "$source")")"
+
+if [ -z "$dest" ]; then
+	# If dest is empty, use current directory and append source_name_base
+	dest="./${source_name_base%.7z}.7z"
+elif [ -d "$dest" ]; then
+	# If dest is a directory, append source_name_base to it
+	dest="${dest%/}/${source_name_base%.7z}.7z"
+else
+	# dest is a file path (may or may not exist), ensure it has .7z extension
+	dest="${dest%.7z}.7z"
+fi
+
+if [ -z "$size" ]; then
+	size="2000m"
+fi
+if [[ "$size" =~ ^[0-9]+$ ]]; then
+	size="${size}m"
+fi
+
+source_dir="$(dirname "$(realpath "$source")")"
+source_name="$(basename "$source")"
+dest_abs="$(realpath -m "$dest")"
+
+echo "Creating 7z archive..."
+(cd "$source_dir" && 7z a -t7z -mmt=on -v"$size" "$dest_abs" "$source_name" -bb0 -bso0 2> >(sed -n '/%/p'))
+exit $?

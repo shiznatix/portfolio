@@ -1,0 +1,45 @@
+#!/bin/bash
+
+# https://gist.github.com/darth-veitcher/d52b5401d17f3cdfc156f7e3307116dc
+
+show_help() {
+	cat << 'EOF'
+Check Raspberry Pi CPU frequency, voltage, temperature, and throttling status.
+
+Usage: $0 [-h|--help]
+EOF
+	exit "${1:-0}"
+}
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		-h|--help)
+			show_help 0
+			;;
+		*)
+			echo "Unknown option: $1" >&2
+			show_help 1
+			;;
+	esac
+done
+
+vcgencmd get_config int | egrep "(arm|core|gpu|sdram)_freq|over_volt"
+
+for src in arm core h264 isp v3d; do
+	echo -e "$src:\t$(vcgencmd measure_clock $src)"
+done
+
+for id in core sdram_c sdram_i sdram_p; do
+	echo -e "$id:\t$(vcgencmd measure_volts $id)"
+done
+
+vcgencmd measure_temp
+throttled="$(vcgencmd get_throttled)"
+
+if [[ $throttled != "throttled=0x0" ]]; then
+	echo "$throttled"
+	echo
+	echo -e "\033[1;31mWARNING: You are being throttled!\033[0m"
+	exit 1
+else
+	echo -e "No throttling detected."
+fi

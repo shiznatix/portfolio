@@ -1,0 +1,5 @@
+[Desktop Entry]
+Version=0.0.1
+Type=Application
+Name=VLR
+Exec=sh -c "sleep 10 && systemctl --user start vlr.service"

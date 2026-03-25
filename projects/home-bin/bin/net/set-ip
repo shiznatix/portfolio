@@ -1,0 +1,362 @@
+#!/bin/bash
+
+set -e
+
+source /var/lib/home-bin/.env
+
+show_help() {
+	cat << 'EOF'
+Configure a Raspberry Pi with a static IP address over SSH.
+
+Usage: ${MMHB_CMD} net set-ip [options]
+All parameters are optional and can be auto-detected or prompted.
+
+Options:
+  -c, --current-ip IP  Current IP of the Pi (or use pifind to scan)
+  -s, --static-ip IP   Static IP to assign (prompts if not provided)
+  -w, --wifi NAME	  WiFi network name (auto-detects from local machine)
+  -u, --user USERNAME  SSH username (default: pi)
+  -d, --dns DNS_IP	 DNS server IP (default: gateway IP)
+  -h, --help		   Show this help message
+EOF
+	exit "${1:-0}"
+}
+
+current_ip=""
+static_ip=""
+wifi_name=""
+username=""
+dns=""
+
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		--completion)
+			shift
+			curr="$1"
+			if [[ "$curr" == -* ]]; then
+				[ -z "$current_ip" ] && echo "flag:--current-ip"
+				[ -z "$static_ip" ] && echo "flag:--static-ip"
+				[ -z "$wifi_name" ] && echo "flag:--wifi"
+				[ -z "$username" ] && echo "flag:--user"
+				[ -z "$dns" ] && echo "flag:--dns"
+				echo "flag:--help"
+			fi
+			exit 0
+			;;
+		-c|--current-ip)
+			shift
+			if [ -z "$1" ] || [[ "$1" == -* ]]; then
+				echo "Error: -c/--current-ip requires a value." >&2
+				show_help 1
+			fi
+			current_ip="$1"
+			shift
+			;;
+		-s|--static-ip)
+			shift
+			if [ -z "$1" ] || [[ "$1" == -* ]]; then
+				echo "Error: -s/--static-ip requires a value." >&2
+				show_help 1
+			fi
+			static_ip="$1"
+			shift
+			;;
+		-w|--wifi)
+			shift
+			if [ -z "$1" ] || [[ "$1" == -* ]]; then
+				echo "Error: -w/--wifi requires a value." >&2
+				show_help 1
+			fi
+			wifi_name="$1"
+			shift
+			;;
+		-u|--user)
+			shift
+			if [ -z "$1" ] || [[ "$1" == -* ]]; then
+				echo "Error: -u/--user requires a value." >&2
+				show_help 1
+			fi
+			username="$1"
+			shift
+			;;
+		-d|--dns)
+			shift
+			if [ -z "$1" ] || [[ "$1" == -* ]]; then
+				echo "Error: -d/--dns requires a value." >&2
+				show_help 1
+			fi
+			dns="$1"
+			shift
+			;;
+		-h|--help)
+			show_help 0
+			;;
+		*)
+			echo "Unknown option: $1" >&2
+			show_help 1
+			;;
+	esac
+done
+
+username="${username:-pi}"
+
+get_local_wifi_ip() {
+	# Try nmcli first (most common on Linux)
+	if command -v nmcli >/dev/null 2>&1; then
+		local wifi_ip
+		wifi_ip=$(nmcli -t -f IP4.ADDRESS dev show $(nmcli -t -f DEVICE,TYPE dev | grep ':wifi$' | cut -d: -f1 | head -n1) 2>/dev/null | grep 'IP4.ADDRESS' | cut -d: -f2 | cut -d/ -f1)
+		if [ -n "$wifi_ip" ]; then
+			echo "$wifi_ip"
+			return 0
+		fi
+	fi
+
+	# Try ip command
+	if command -v ip >/dev/null 2>&1; then
+		local wifi_ip
+		# Find wireless interface and get its IP
+		local wifi_iface=$(ip -o link show | grep -oP '^\d+: \K(wlan\d+|wlp\S+)' | head -n1)
+		if [ -n "$wifi_iface" ]; then
+			wifi_ip=$(ip -4 addr show "$wifi_iface" | grep -oP 'inet \K[\d.]+' | head -n1)
+			if [ -n "$wifi_ip" ]; then
+				echo "$wifi_ip"
+				return 0
+			fi
+		fi
+	fi
+
+	return 1
+}
+
+expand_if_single() {
+	local v="$1"
+	if [[ "$v" != *.* ]]; then
+		# Get local WiFi IP to use as base
+		local local_ip=$(get_local_wifi_ip)
+		if [ -n "$local_ip" ] && [[ "$local_ip" =~ ^([0-9]+\.[0-9]+\.[0-9]+)\.[0-9]+$ ]]; then
+			# Use the network portion of the local IP
+			printf '%s.%s' "${BASH_REMATCH[1]}" "$v"
+		else
+			# Fallback to default network
+			printf '192.168.1.%s' "$v"
+		fi
+	else
+		printf '%s' "$v"
+	fi
+}
+
+get_local_wifi_name() {
+	# Try nmcli first (most common on Linux)
+	if command -v nmcli >/dev/null 2>&1; then
+		local wifi
+		wifi=$(nmcli -t -f active,ssid dev wifi | grep '^yes' | cut -d: -f2)
+		if [ -n "$wifi" ]; then
+			echo "$wifi"
+			return 0
+		fi
+	fi
+
+	# Try iwgetid
+	if command -v iwgetid >/dev/null 2>&1; then
+		local wifi
+		wifi=$(iwgetid -r)
+		if [ -n "$wifi" ]; then
+			echo "$wifi"
+			return 0
+		fi
+	fi
+
+	return 1
+}
+
+# Get current IP if not provided
+if [ -z "$current_ip" ]; then
+	echo "No current IP specified. Scanning for devices..."
+	current_ip=$($MMHB_CMD net scan --select)
+	if [ -z "$current_ip" ]; then
+		echo "Error: No IP selected." >&2
+		exit 1
+	fi
+fi
+
+# Get WiFi name if not provided
+if [ -z "$wifi_name" ]; then
+	echo "No WiFi name specified. Attempting to auto-detect from local machine..."
+	wifi_name=$(get_local_wifi_name)
+	if [ -z "$wifi_name" ]; then
+		echo "Error: Could not detect WiFi name and none was provided." >&2
+		echo "Please connect to WiFi or use -w/--wifi flag." >&2
+		exit 1
+	fi
+	echo "Detected WiFi: $wifi_name"
+fi
+
+# Get static IP if not provided
+if [ -z "$static_ip" ]; then
+	read -p "Enter static IP address for the Pi: " static_ip
+	if [ -z "$static_ip" ]; then
+		echo "Error: Static IP is required." >&2
+		exit 1
+	fi
+fi
+
+# Check for sshpass
+ssh_password=""
+use_sshpass=false
+if command -v sshpass >/dev/null 2>&1; then
+	use_sshpass=true
+else
+	echo "Warning: sshpass is not installed."
+	echo "sshpass is recommended to avoid multiple password prompts when changing IPs."
+	read -p "Would you like to install sshpass now? [Y/n]: " -n 1 -r
+	echo
+	if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+		echo "Installing sshpass..."
+		sudo apt update && sudo apt install -y sshpass
+		if command -v sshpass >/dev/null 2>&1; then
+			use_sshpass=true
+			echo "sshpass installed successfully."
+		else
+			echo "Warning: sshpass installation failed. You may be prompted for password multiple times."
+		fi
+	fi
+fi
+
+remote_cmd() {
+	if [ "$use_sshpass" = true ] && [ -n "$ssh_password" ]; then
+		SSHPASS="$ssh_password" sshpass -e ssh -o ControlMaster=auto \
+			-o ControlPath=~/.ssh/control-%r@%h:%p \
+			-o ControlPersist=10m \
+			-o StrictHostKeyChecking=no \
+			-o UserKnownHostsFile=/dev/null \
+			"$username"@"$current_ip" "sudo $*"
+	else
+		ssh -o ControlMaster=auto \
+			-o ControlPath=~/.ssh/control-%r@%h:%p \
+			-o ControlPersist=10m \
+			-o StrictHostKeyChecking=no \
+			-o UserKnownHostsFile=/dev/null \
+			"$username"@"$current_ip" "sudo $*"
+	fi
+}
+
+# Cleanup SSH control connection on exit
+trap 'ssh -o ControlPath=~/.ssh/control-%r@%h:%p -O exit "$username"@"$current_ip" 2>/dev/null' EXIT
+
+current_ip=$(expand_if_single "$current_ip")
+static_ip=$(expand_if_single "$static_ip")
+
+# Test if password authentication is needed
+if [ "$use_sshpass" = true ]; then
+	if ! ssh -o BatchMode=yes -o ConnectTimeout=10 -o ControlMaster=auto \
+		 -o ControlPath=~/.ssh/control-%r@%h:%p -o ControlPersist=10m \
+		 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+		 "$username"@"$current_ip" "exit" 2>/dev/null; then
+		echo "Password authentication required."
+		read -sp "Password for $username@$current_ip: " ssh_password
+		echo
+		export SSHPASS="$ssh_password"
+		# Test the password
+		if ! SSHPASS="$ssh_password" sshpass -e ssh -o ControlMaster=auto \
+			 -o ControlPath=~/.ssh/control-%r@%h:%p -o ControlPersist=10m \
+			 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+			 "$username"@"$current_ip" "exit" 2>/dev/null; then
+			echo "Error: Authentication failed" >&2
+			exit 1
+		fi
+	fi
+fi
+
+echo "=========================================="
+echo "Pi IP Configuration Tool"
+echo "=========================================="
+echo "Current IP:  $current_ip"
+echo "Static IP:   $static_ip"
+echo "WiFi Name:   $wifi_name"
+echo "Username:	$username"
+
+# Extract network portion from static_ip and set gateway/DNS
+if [[ "$static_ip" =~ ^([0-9]+\.[0-9]+\.[0-9]+)\.[0-9]+$ ]]; then
+	GATEWAY="${BASH_REMATCH[1]}.1"
+	# Use custom DNS if provided, otherwise use gateway IP
+	if [ -z "$dns" ]; then
+		dns="${BASH_REMATCH[1]}.1"
+	fi
+else
+	echo "Error: Invalid IP format for static_ip: $static_ip" >&2
+	exit 1
+fi
+
+echo "Gateway:	 $GATEWAY"
+echo "DNS:		 $dns"
+echo "=========================================="
+echo ""
+
+# Check if connection exists on remote machine
+connection_name="$wifi_name"
+if ! remote_cmd "nmcli connection show '$connection_name' &>/dev/null"; then
+	echo "Connection '$connection_name' not found, trying netplan format..."
+	connection_name="netplan-wlan0-$wifi_name"
+	if ! remote_cmd "nmcli connection show '$connection_name' &>/dev/null"; then
+		echo "Connection '$connection_name' does not exist on remote machine."
+		echo "Please ensure the WiFi network '$wifi_name' is configured on the Raspberry Pi."
+		exit 1
+	fi
+fi
+echo "Found connection '$connection_name'"
+
+remote_cmd "nmcli connection modify '$connection_name' \
+	ipv4.method manual \
+	ipv4.addresses '$static_ip/24' \
+	ipv4.gateway '$GATEWAY' \
+	ipv4.dns '$dns'"
+
+echo "Restarting network connection on remote machine..."
+remote_cmd "nohup sh -c 'sleep 2 && (nmcli connection down \"$connection_name\" && nmcli connection up \"$connection_name\" || reboot)' >/dev/null 2>&1 &"
+
+echo "Waiting for network to restart..."
+sleep 3
+
+echo "Attempting to connect to new IP: $static_ip"
+new_ip="$static_ip"
+max_attempts=10
+attempt=0
+
+while [ $attempt -lt $max_attempts ]; do
+	attempt=$((attempt + 1))
+	echo "Connection attempt $attempt/$max_attempts..."
+
+	if [ "$use_sshpass" = true ] && [ -n "$ssh_password" ]; then
+		if SSHPASS="$ssh_password" sshpass -e ssh -o ControlMaster=auto \
+			   -o ControlPath=~/.ssh/control-new-%r@%h:%p \
+			   -o ControlPersist=10m \
+			   -o ConnectTimeout=10 \
+			   -o StrictHostKeyChecking=no \
+			   -o UserKnownHostsFile=/dev/null \
+			   "$username"@"$new_ip" "exit" 2>/dev/null; then
+			echo "Successfully connected to $new_ip!"
+			# Cleanup new control connection
+			ssh -o ControlPath=~/.ssh/control-new-%r@%h:%p -O exit "$username"@"$new_ip" 2>/dev/null
+			exit 0
+		fi
+	else
+		if ssh -o ControlMaster=auto \
+			   -o ControlPath=~/.ssh/control-new-%r@%h:%p \
+			   -o ControlPersist=10m \
+			   -o ConnectTimeout=10 \
+			   -o StrictHostKeyChecking=no \
+			   -o UserKnownHostsFile=/dev/null \
+			   "$username"@"$new_ip" "exit" 2>/dev/null; then
+			echo "Successfully connected to $new_ip!"
+			# Cleanup new control connection
+			ssh -o ControlPath=~/.ssh/control-new-%r@%h:%p -O exit "$username"@"$new_ip" 2>/dev/null
+			exit 0
+		fi
+	fi
+
+	sleep 2
+done
+
+echo "Failed to connect to new IP after $max_attempts attempts."
+echo "The configuration was applied, but connectivity to $new_ip could not be verified."
+exit 1

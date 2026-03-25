@@ -1,0 +1,158 @@
+#!/bin/bash
+
+source /var/lib/home-bin/.env
+
+show_help() {
+	cat << 'EOF'
+Show Nvidia GPU usage.
+
+Usage: gpu monitor [OPTIONS]
+
+Options:
+  -o, --once        Show status once and quit
+  -h, --help        Show this help message and exit
+
+Examples:
+  gpu monitor --once
+  gpu monitor --help
+EOF
+	exit "${1:-0}"
+}
+
+watch=true
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --completion)
+            shift
+            curr="$1"
+            if [[ "$curr" == -* ]]; then
+                [ "$watch" = false ] && echo "flag:--once"
+                echo "flag:--help"
+            fi
+            exit 0
+            ;;
+        -o|--once)
+            watch=false
+            shift
+            ;;
+        -h|--help)
+            show_help 0
+            ;;
+        *)
+            echo "Error: Unknown argument: $1" >&2
+            show_help 1
+            ;;
+    esac
+done
+
+session_type="$XDG_SESSION_TYPE"
+prime_mode="$(prime-select query)"
+persistence="$(nvidia-smi -q | grep "Persistence" | awk '{print $NF}')"
+
+_render_gpu_status() {
+	local sep="──────────────────────────────────────────────────────────────"
+
+	# Collect all GPU data up front
+	local gpu_raw compute_raw pmon_raw
+	gpu_raw=$(nvidia-smi --query-gpu=name,utilization.gpu,utilization.memory,temperature.gpu,power.draw,power.limit,memory.used,memory.total,fan.speed \
+		--format=csv,noheader,nounits 2>/dev/null)
+	compute_raw=$(nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader,nounits 2>/dev/null)
+	pmon_raw=$(nvidia-smi pmon -i 0 -c 1 2>/dev/null | awk 'NR>2')
+
+	# Header
+	printf "Session: %s  | Prime: %s | Persistence: %s\n\n" "$session_type" "$prime_mode" "$persistence"
+
+	if [[ -z "$gpu_raw" ]]; then
+		echo "Error: nvidia-smi not available or no GPU found"
+		return 1
+	fi
+
+	# Parse GPU stats (trim whitespace from each field)
+	IFS=',' read -r gpu_name gpu_util mem_util gpu_temp power_draw power_limit mem_used mem_total fan_speed <<< "$gpu_raw"
+	gpu_name=$(echo "$gpu_name" | xargs)
+	gpu_util=$(echo "$gpu_util" | xargs)
+	mem_util=$(echo "$mem_util" | xargs)
+	gpu_temp=$(echo "$gpu_temp" | xargs)
+	power_draw=$(echo "$power_draw" | xargs)
+	power_limit=$(echo "$power_limit" | xargs)
+	mem_used=$(echo "$mem_used" | xargs)
+	mem_total=$(echo "$mem_total" | xargs)
+	fan_speed=$(echo "$fan_speed" | xargs)
+
+	local mem_free=$(( mem_total - mem_used ))
+	# Normalize [N/A] values to a compact dash
+	[[ "$power_draw"  == *N/A* ]] && power_draw="-"  || power_draw="${power_draw%.*}"
+	[[ "$power_limit" == *N/A* ]] && power_limit="-" || power_limit="${power_limit%.*}"
+	[[ "$gpu_temp"    == *N/A* ]] && gpu_temp="-"
+	[[ "$fan_speed"   == *N/A* ]] && fan_speed=""
+
+	# ── GPU Overview ──────────────────────────────────────────────
+	printf "%s\n" "$gpu_name"
+
+	printf "\n"
+	printf "%-22s %-28s %s\n" "Utilization" "Memory" "Thermal & Power"
+	printf "%-22s %-28s %s\n" "────────────────────" "──────────────────────────" "──────────────────────"
+	printf "%-22s %-28s %s\n" \
+		"GPU:  ${gpu_util}%" \
+		"Used:  ${mem_used} / ${mem_total} MiB" \
+		"Temp:   ${gpu_temp}°C"
+	printf "%-22s %-28s %s\n" \
+		"Mem:  ${mem_util}%" \
+		"Free:  ${mem_free} MiB" \
+		"Power:  ${power_draw} / ${power_limit} W"
+	if [[ -n "$fan_speed" ]]; then
+		printf "%-22s %-28s %s\n" "" "" "Fan:    ${fan_speed}%"
+	fi
+
+	printf "\n"
+
+	# ── Processes ─────────────────────────────────────────────────
+	printf "Processes\n"
+	echo "$sep"
+	printf "%-8s %-22s %-10s %-12s %-5s %-5s\n" "PID" "Name" "User" "VRAM" "GPU%" "Mem%"
+	printf "%-8s %-22s %-10s %-12s %-5s %-5s\n" "────────" "──────────────────────" "──────────" "────────────" "─────" "─────"
+
+	local has_procs=false
+	while IFS= read -r line; do
+		[[ -z "$line" ]] && continue
+		read -r _gpu pid _type sm mem _enc _dec cmd <<< "$line"
+		[[ "$pid" == "-" || -z "$pid" ]] && continue
+
+		[[ "$sm"  == "-" ]] && sm=0
+		[[ "$mem" == "-" ]] && mem=0
+
+		local user vram_str
+		user=$(ps -p "$pid" -o user= 2>/dev/null | xargs)
+		vram_str=$(echo "$compute_raw" | awk -F',' -v p="$pid" '{
+			gsub(/^ +| +$/, "", $1); gsub(/^ +| +$/, "", $2)
+			if ($1 == p) print $2 " MiB"
+		}')
+		[[ -z "$vram_str" ]] && vram_str="-"
+
+		printf " %-8s %-22s %-10s %-12s %-5s %-5s\n" \
+			"$pid" "${cmd:0:22}" "${user:0:10}" "$vram_str" "$sm" "$mem"
+		has_procs=true
+	done < <(echo "$pmon_raw" | sort -k4 -nr)
+
+	if [[ "$has_procs" == false ]]; then
+		printf " (no active GPU processes)\n"
+	fi
+
+	printf "\n"
+}
+
+if [ "$watch" = true ]; then
+	trap 'tput cnorm; echo; exit 0' INT TERM
+	tput civis  # hide cursor to reduce flicker
+	tput clear  # initial clear only
+	while true; do
+		frame=$(_render_gpu_status)
+		# Move to top-left, print frame, erase leftover lines below
+		printf '\033[H%s\033[J' "$frame"
+		# Sleep 1s but wake early if user presses 'q'
+		read -r -s -n 1 -t 1 key
+		[[ "$key" == "q" || "$key" == "Q" ]] && tput cnorm && echo && exit 0
+	done
+else
+	_render_gpu_status
+fi

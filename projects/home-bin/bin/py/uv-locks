@@ -1,0 +1,166 @@
+#!/bin/bash
+
+set -euo pipefail
+
+show_help() {
+	cat << 'EOF'
+Create uv.lock files for different archs
+
+Usage: $0 [path-to-project]
+Options:
+	-h, --help		Show this help message
+
+Examples:
+  $0 ~/src/stream-screen
+EOF
+	exit "${1:-0}"
+}
+
+archs=("linux/amd64" "linux/arm64") # Architectures to build
+src_dir="$HOME/src"
+rhpy_dir="${src_dir}/redhouse-platform/python/libs/rhpy"
+project=""
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		--completion)
+			shift
+			curr="$1"
+			if [[ "$curr" == -* ]]; then
+				echo "flag:--help"
+			elif [[ -z "$project" ]]; then
+				# TODO get all project names
+				# echo "word:add"
+				exit 0
+			fi
+			exit 0
+			;;
+		-h|--help)
+			show_help 0
+			;;
+		*)
+			# Parse project
+			if [[ -z "$project" ]]; then
+				project="$1"
+				shift
+			else
+				echo "Error, unknown keyword argument '$1'" >&2
+				exit 1
+			fi
+			;;
+	esac
+done
+
+
+if [[ -z "$project" ]]; then
+	project=$(basename "$(pwd)")
+fi
+repo_path=$(realpath "${src_dir}/${project}")
+if [[ ! -d "$repo_path" ]]; then
+  echo "Error: Path does not exist: $repo_path"
+  exit 1
+fi
+
+cd "${src_dir}/$project"
+source "$(dirname "$(realpath "$0")")/.set-dir.sh"
+project_path=$(pwd)
+py_version_file="$project_path/.python-version"
+
+if [[ ! -f "$py_version_file" ]]; then
+  echo "Error: .python-version not found in project path."
+  exit 1
+fi
+
+py_version=$(cat "$py_version_file" | tr -d '[:space:]')
+if [[ -z "$py_version" ]]; then
+	echo "Error: .python-version is empty."
+	exit 1
+fi
+
+ctx_path="/tmp/uv-locks/${project}"
+if [[ -d "$ctx_path" ]]; then
+	read -rp "Context path '$ctx_path' already exists. Delete it? [Y/n] " answer
+	if [[ "${answer,,}" == "n" ]]; then
+		echo "Context already existed." >&2
+		exit 1
+	else
+		rm -rf "$ctx_path"
+	fi
+fi
+
+dockerfile_tmp="${ctx_path}/Dockerfile"
+mkdir -p "$ctx_path"
+
+echo "Build context location: $ctx_path"
+echo "Using Python version: $py_version"
+
+cp "${project_path}/pyproject.toml" "$ctx_path"
+cp "${project_path}/.python-version" "$ctx_path"
+cp -r "$rhpy_dir" "${ctx_path}/.rhpy"
+
+cat > "$dockerfile_tmp" <<EOF
+ARG py_version=${py_version}
+FROM python:\${py_version}-slim
+
+# Build dependencies for compiled Python packages
+RUN apt-get update \
+	&& apt-get install -y \
+		build-essential git curl \
+	&& rm -rf /var/lib/apt/lists/*
+
+# Install uv
+RUN pip install --upgrade pip uv
+
+WORKDIR /app
+COPY pyproject.toml ./
+COPY .python-version ./
+COPY .rhpy ./
+
+CMD ["uv", "lock", "--upgrade"]
+EOF
+
+# Ensure QEMU binfmt handlers are registered for cross-arch builds
+binfmt_flag="/tmp/binfmt-installed"
+if [[ ! -f "$binfmt_flag" ]]; then
+	docker run --rm --privileged tonistiigi/binfmt --install all
+	touch "$binfmt_flag"
+fi
+
+for arch in "${archs[@]}"; do
+	echo "=== Generating uv.lock for $arch ==="
+	img_name="uv-lock-builder-$(echo $arch | tr / - | tr A-Z a-z | tr . _)"
+	# echo "Image: $img_name"
+
+	# echo "Build image..."
+	build_flags=""
+	image_created=$(docker inspect --format '{{.Created}}' "$img_name" 2>/dev/null || true)
+	if [[ -n "$image_created" ]]; then
+		image_ts=$(date -d "$image_created" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%S" "${image_created%%.*}" +%s 2>/dev/null || echo 0)
+		week_ago=$(date -d "1 week ago" +%s 2>/dev/null || date -v-7d +%s 2>/dev/null || echo 0)
+		if [[ "$image_ts" -lt "$week_ago" ]]; then
+			echo "Image is older than 1 week, forcing rebuild..."
+			build_flags="--no-cache"
+		fi
+	fi
+	build_output=$(docker buildx build \
+		--platform "$arch" \
+		--load \
+		$build_flags \
+		-t "$img_name" \
+		"$ctx_path" 2>&1) || { echo "$build_output" >&2; exit 1; }
+
+	# echo "Run image..."
+	run_output=$(docker run --rm --platform "$arch" --user "$(id -u):$(id -g)" -e UV_CACHE_DIR=/tmp/uv-cache -v "$ctx_path":/app "$img_name" 2>&1) || { echo "$run_output" >&2; exit 1; }
+
+	# echo "Move uv.lock..."
+	case "$arch" in
+		linux/amd64)  arch_suffix="x86_64" ;;
+		linux/arm64)  arch_suffix="aarch64" ;;
+		*)            arch_suffix="$(echo "$arch" | tr / _)" ;;
+	esac
+	mv "$ctx_path/uv.lock" "$project_path/uv.lock.${arch_suffix}"
+done
+
+echo "Done! Lockfiles generated:"
+ls -1 "$project_path"/uv.lock.*
+
+rm -rf "$ctx_path"

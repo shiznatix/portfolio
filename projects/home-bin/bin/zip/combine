@@ -1,0 +1,117 @@
+#!/bin/bash
+
+source /var/lib/home-bin/.env
+
+show_help() {
+	cat << 'EOF'
+Combine split multi-part 7z archive chunks into a single archive.
+
+Usage: $0 [options] SOURCE [DEST]
+
+Options:
+  -n, --no-extract      Do not extract before re-archiving
+  -d, --delete-source   Delete source chunk files after combining
+  -h, --help            Show this help message
+EOF
+	exit "${1:-0}"
+}
+source=""
+dest=""
+extract=true
+delete_source=false
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		--completion)
+			shift
+			curr="$1"
+			if [[ "$curr" == -* ]]; then
+				[ "$extract" = true ] && echo "flag:--no-extract"
+				[ "$delete_source" = false ] && echo "flag:--delete-source"
+				echo "flag:--help"
+			elif [ -z "$source" ]; then
+				echo "file:.7z"
+			elif [ -z "$dest" ]; then
+				echo "dir:"
+			fi
+			exit 0
+			;;
+		-n|--no-extract)
+			extract=false
+			shift
+			;;
+		-d|--delete-source)
+			delete_source=true
+			shift
+			;;
+		-h|--help)
+			show_help 0
+			;;
+		*)
+			if [ -z "$source" ]; then
+				source="$1"
+				shift
+			elif [ -z "$dest" ]; then
+				dest="$1"
+				shift
+			else
+				echo "Error: Unknown argument: $1"
+				exit 1
+			fi
+			;;
+	esac
+done
+
+if [ ! -f "$source" ]; then
+	echo "Error: $source is not a file"
+	exit 1
+elif [[ "${source##*.}" != "7z" ]]; then
+	echo "Error: $source is not a 7z file"
+	exit 1
+fi
+source_name_base="$(basename "$source" .7z)"
+
+chunks_file_pattern="${source_name_base}.7z ${source_name_base}.z[0-9][0-9] ${source_name_base}.z[0-9][0-9][0-9]"
+chunks_count=$(ls -1 $chunks_file_pattern 2>/dev/null | wc -l)
+if [ $chunks_count -lt 2 ]; then
+	echo "Error: Chunk count $chunks_count is less than required 2 in $source"
+	exit 1
+fi
+
+if [ -z "$dest" ]; then
+	dest="${source_name_base}-combined"
+fi
+dest_file_name="$(basename "$dest")"
+dest_dir_path="$(dirname "$dest")"
+dest="$dest_dir_path/${dest_file_name%.7z}.7z"
+
+if [ -f "$dest" ]; then
+	echo "Error: $dest already exists"
+	exit 1
+fi
+
+if [ "$extract" = true ]; then
+	temp_dir=$(mktemp -d)
+	trap 'rm -rf "$temp_dir"' EXIT
+	echo "Extracting $source to temporary directory..."
+	$MMHB_CMD zip extract "$source" "$temp_dir"
+	file_pattern="$temp_dir/*"
+else
+	file_pattern="$chunks_file_pattern"
+fi
+
+echo "Creating combined archive..."
+7z a -t7z -mmt=on "$dest" "$file_pattern" -bb0 -bso0 2> >(sed -n '/%/p')
+res=$?
+
+if [ $res -ne 0 ]; then
+	echo "Error: Failed to create combined archive"
+	exit $res
+fi
+
+if [ "$delete_source" = true ]; then
+	echo "Deleting source files..."
+	(rm -f $chunks_file_pattern)
+fi
+
+echo "Combined archive created: $dest"
+exit $res

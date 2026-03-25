@@ -1,0 +1,450 @@
+#!/bin/bash
+
+script_name=$(basename "$0")
+
+show_help() {
+	cat << 'EOF'
+Re-encode and edit video files using ffmpeg.
+
+Usage: $script_name [options] <source> [destination]
+
+Options:
+  -s, --start <time>           Start time for trimming (format: HH:MM:SS)
+  -e, --end <time>             End time for trimming (format: HH:MM:SS)
+  -X, --crop-out-x <range>     Crop out X-axis range (v1:v2, v1:end, start:v2, end:v1)
+  -Y, --crop-out-y <range>     Crop out Y-axis range (v1:v2, v1:end, start:v2, end:v1)
+  -x, --cut <time-time>        Cut out segment (format: HH:MM:SS-HH:MM:SS)
+  -p, --preset <preset>        Encoding preset (veryslow, slow, fast, veryfast; default: veryslow)
+  -q, --crf <value>            Video quality CRF (0-51, lower=better; default: 18)
+  -a, --audio-bitrate <rate>   Audio bitrate (default: 320k)
+  -n, --dry-run                Print ffmpeg command and exit without running
+  -d, --delete-dest            Delete destination file if it exists
+  -D, --delete-source          Delete source file after successful re-encoding
+  -R, --replace-source         Replace source file with re-encoded file
+  -r, --rename-source          Rename source file to <original-name>-orig.<ext>
+  -h, --help                   Show this help message
+EOF
+	exit "${1:-0}"
+}
+
+# Convert HH:MM:SS to seconds
+function time_to_seconds() {
+	local time="$1"
+	IFS=':' read -r hours minutes seconds <<< "$time"
+	echo $((10#$hours * 3600 + 10#$minutes * 60 + 10#$seconds))
+}
+
+# Get video duration in seconds
+function get_video_duration() {
+	local file="$1"
+	ffprobe -v quiet -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null | cut -d. -f1
+}
+
+# Format seconds to HH:MM:SS
+function format_time() {
+	local total_seconds="$1"
+	local hours=$((total_seconds / 3600))
+	local minutes=$(((total_seconds % 3600) / 60))
+	local seconds=$((total_seconds % 60))
+	printf "%02d:%02d:%02d" "$hours" "$minutes" "$seconds"
+}
+
+source=""
+dest=""
+start_time=""
+end_time=""
+crop_x=""
+crop_y=""
+cut_segments=()
+preset=""
+crf=""
+audio_bitrate=""
+dry_run=false
+delete_dest=false
+delete_source=false
+replace_source=false
+rename_source=false
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		--completion)
+			shift
+			curr="$1"
+			if [[ "$curr" == -* ]]; then
+				[ -z "$start_time" ] && echo "flag:--start"
+				[ -z "$end_time" ] && echo "flag:--end"
+				[ -z "$crop_x" ] && echo "flag:--crop-out-x"
+				[ -z "$crop_y" ] && echo "flag:--crop-out-y"
+				[ -z "$preset" ] && echo "flag:--preset"
+				[ -z "$crf" ] && echo "flag:--crf"
+				[ -z "$audio_bitrate" ] && echo "flag:--audio-bitrate"
+				[ "$dry_run" = false ] && echo "flag:--dry-run"
+				[ "$delete_dest" = false ] && echo "flag:--delete-dest"
+				[ "$delete_source" = false ] && echo "flag:--delete-source"
+				[ "$replace_source" = false ] && echo "flag:--replace-source"
+				[ "$rename_source" = false ] && echo "flag:--rename-source"
+				echo "flag:--cut"
+				echo "flag:--help"
+			elif [[ -z "$source" || -z "$dest" ]]; then
+				echo "file:"
+			fi
+			exit 0
+			;;
+		-s|--start)
+			start_time="$2"
+			shift 2
+			;;
+		-e|--end)
+			end_time="$2"
+			shift 2
+			;;
+		-X|--crop-out-x)
+			if [[ ! "$2" =~ ^(start|end|[0-9]+):(end|[0-9]+)$ ]]; then
+				echo "Error: Invalid X crop format. Use v1:v2, v1:end, start:v2, or end:v1 (e.g., 100:200, 50:end, start:150, end:100)"
+				show_help 1
+			fi
+			if [[ -n "$crop_x" ]]; then
+				echo "Error: Only one X-axis crop operation allowed per command"
+				show_help 1
+			fi
+			crop_x="$2"
+			shift 2
+			;;
+		-Y|--crop-out-y)
+			if [[ ! "$2" =~ ^(start|end|[0-9]+):(end|[0-9]+)$ ]]; then
+				echo "Error: Invalid Y crop format. Use v1:v2, v1:end, start:v2, or end:v1 (e.g., 100:200, 50:end, start:150, end:100)"
+				show_help 1
+			fi
+			if [[ -n "$crop_y" ]]; then
+				echo "Error: Only one Y-axis crop operation allowed per command"
+				show_help 1
+			fi
+			crop_y="$2"
+			shift 2
+			;;
+		-x|--cut)
+			if [[ ! "$2" =~ ^[0-9]{2}:[0-9]{2}:[0-9]{2}-[0-9]{2}:[0-9]{2}:[0-9]{2}$ ]]; then
+				echo "Error: Invalid cut format. Use HH:MM:SS-HH:MM:SS (e.g., 00:01:30-00:02:45)"
+				show_help 1
+			fi
+			cut_segments+=("$2")
+			shift 2
+			;;
+		-p|--preset)
+			case "$2" in
+				veryslow|slow|fast|veryfast)
+					;;
+				*)
+					echo "Error: Invalid preset: $2"
+					show_help 1
+					;;
+			esac
+			preset="$2"
+			shift 2
+			;;
+		-q|--crf)
+			if [[ ! "$2" =~ ^[0-9]+$ ]] || [[ "$2" -lt 0 ]] || [[ "$2" -gt 51 ]]; then
+				echo "Error: CRF must be a number between 0-51"
+				show_help 1
+			fi
+			crf="$2"
+			shift 2
+			;;
+		-a|--audio-bitrate)
+			if [[ ! "$2" =~ ^[0-9]+k?$ ]]; then
+				echo "Error: Audio bitrate must be a number followed by optional 'k' (e.g., 320k, 192)"
+				show_help 1
+			fi
+			# Add 'k' if not present
+			[[ "$2" =~ k$ ]] && audio_bitrate="$2" || audio_bitrate="${2}k"
+			shift 2
+			;;
+		-n|--dry-run)
+			dry_run=true
+			shift
+			;;
+		-d|--delete-dest)
+			delete_dest=true
+			shift
+			;;
+		-D|--delete-source)
+			delete_source=true
+			shift
+			;;
+		-R|--replace-source)
+			read -p "Are you sure you want to replace the source file? The original file will be lost! [y/N] " confirm
+			case "$confirm" in
+				[yY])
+					replace_source=true
+					shift
+					;;
+				*)
+					echo "Aborted."
+					exit 0
+					;;
+			esac
+			;;
+		-r|--rename-source)
+			rename_source=true
+			shift
+			;;
+		-h|--help)
+			show_help 0
+			;;
+		*)
+			if [[ -f "$1" ]]; then
+				if [[ -n "$source" ]]; then
+					echo "Error: Multiple source files specified: '$source' and '$1'"
+					show_help 1
+				fi
+				source="$1"
+				shift
+			elif [[ -z "$dest" ]]; then
+				dest="$1"
+				shift
+			else
+				echo "Error: Unknown argument: $1"
+				show_help 1
+			fi
+			;;
+	esac
+done
+
+preset="${preset:-veryslow}"
+crf="${crf:-18}"
+audio_bitrate="${audio_bitrate:-320k}"
+
+# Validate inputs
+if [[ -z "$source" ]]; then
+	echo "Error: Source file is required."
+	echo
+	show_help 1
+fi
+if [[ ! -f "$source" ]]; then
+	echo "Error: Source file does not exist: $source"
+	echo
+	show_help 1
+fi
+
+# Validate that cut segments and start/end time are not used together
+if [[ ${#cut_segments[@]} -gt 0 && (-n "$start_time" || -n "$end_time") ]]; then
+	echo "Error: Cannot use cut segments (-x/--cut) together with start/end time (-s/--start, -e/--end)."
+	echo "These operations conflict with each other. Use either:"
+	echo "  - Cut segments to remove specific parts: -x 00:01:00-00:02:00"
+	echo "  - Start/end time to trim: -s 00:05:00 -e 00:10:00"
+	echo "But not both in the same command."
+	echo
+	show_help 1
+fi
+
+# Determine destination file
+if [[ "$replace_source" = true || "$rename_source" = true ]]; then
+	dest="$(mktemp "/tmp/vid-edit-XXXXXXXX.mp4")"
+	rm -f "$dest"
+else
+	if [[ -z "$dest" ]]; then
+		dest="${source%.*}-new.mp4"
+	fi
+	ext="${dest##*.}"
+	if [[ "$ext" != "mp4" ]]; then
+		dest="${dest}.mp4"
+	elif [[ "$ext" == "MP4" ]]; then
+		dest="${dest%.*}.mp4"
+	fi
+fi
+
+# summary of options
+msg="Re-encoding $source to $dest"
+msg_opts=()
+[[ -n "$start_time" ]] && msg_opts+=("start: $start_time")
+[[ -n "$end_time" ]] && msg_opts+=("end: $end_time")
+[[ -n "$crop_x" ]] && msg_opts+=("crop-out-x: $crop_x")
+[[ -n "$crop_y" ]] && msg_opts+=("crop-out-y: $crop_y")
+[[ ${#cut_segments[@]} -gt 0 ]] && msg_opts+=("cuts: ${#cut_segments[@]} segment(s)")
+if [[ ${#msg_opts[@]} -gt 0 ]]; then
+	msg+=" (${msg_opts[*]})"
+fi
+echo "$msg"
+
+# build ffmpeg command
+ffmpeg_opts=("-hide_banner" "-loglevel" "error" "-stats")
+[[ -n "$start_time" ]] && ffmpeg_opts+=("-ss" "$start_time")
+[[ -n "$end_time" ]] && ffmpeg_opts+=("-to" "$end_time")
+ffmpeg_opts+=(-i "$source")
+
+video_filters=()
+# Handle crop-out operations (simplified - only supports cropping from edges)
+if [[ -n "$crop_x" || -n "$crop_y" ]]; then
+	# Build crop filter to remove specified ranges
+	crop_x="0"
+	crop_y="0"
+	crop_w="iw"
+	crop_h="ih"
+
+	if [[ -n "$crop_x" ]]; then
+		IFS=':' read -r x1 x2 <<< "$crop_x"
+
+		# Handle end:v1 format (crop v1 pixels from right edge)
+		if [[ "$x1" == "end" ]]; then
+			# Remove x2 pixels from the right: keep from start to (width - x2)
+			crop_w="iw-$x2"
+		elif [[ "$x1" == "start" && "$x2" != "end" ]]; then
+			# Remove from start to x2: keep from x2 to end
+			crop_x="$x2"
+			crop_w="iw-$x2"
+		elif [[ "$x1" != "start" && "$x1" != "end" && "$x2" == "end" ]]; then
+			# Remove from x1 to end: keep from start to x1
+			crop_w="$x1"
+		else
+			echo "Error: Complex X-axis crop-out (middle sections) not yet supported"
+			echo "Only supports: start:value (crop left), value:end (crop right), or end:value (crop right edge)"
+			exit 1
+		fi
+	fi
+
+	if [[ -n "$crop_y" ]]; then
+		IFS=':' read -r y1 y2 <<< "$crop_y"
+
+		# Handle end:v1 format (crop v1 pixels from bottom edge)
+		if [[ "$y1" == "end" ]]; then
+			# Remove y2 pixels from the bottom: keep from start to (height - y2)
+			crop_h="ih-$y2"
+		elif [[ "$y1" == "start" && "$y2" != "end" ]]; then
+			# Remove from start to y2: keep from y2 to end
+			crop_y="$y2"
+			crop_h="ih-$y2"
+		elif [[ "$y1" != "start" && "$y1" != "end" && "$y2" == "end" ]]; then
+			# Remove from y1 to end: keep from start to y1
+			crop_h="$y1"
+		else
+			echo "Error: Complex Y-axis crop-out (middle sections) not yet supported"
+			echo "Only supports: start:value (crop top), value:end (crop bottom), or end:value (crop bottom edge)"
+			exit 1
+		fi
+	fi
+
+	video_filters+=("crop=${crop_w}:${crop_h}:${crop_x}:${crop_y}")
+fi
+if [[ ${#cut_segments[@]} -gt 0 ]]; then
+	# For cutting segments, we need to create a filter that concatenates the parts we want to keep
+	# First, sort the cut segments by start time
+	IFS=$'\n' cut_segments=($(sort <<<"${cut_segments[*]}"))
+
+	# Build segments to keep
+	keep_segments=()
+	last_end="0"
+
+	for segment in "${cut_segments[@]}"; do
+		IFS='-' read -r cut_start cut_end <<< "$segment"
+		cut_start_sec=$(time_to_seconds "$cut_start")
+		cut_end_sec=$(time_to_seconds "$cut_end")
+
+		# Add segment from last_end to cut_start (if there's a gap)
+		if (( cut_start_sec > last_end )); then
+			keep_segments+=("${last_end}:$((cut_start_sec - last_end))")
+		fi
+		last_end="$cut_end_sec"
+	done
+
+	# Add final segment from last cut to end (use a large duration)
+	keep_segments+=("${last_end}:999999")
+
+	# Use multiple inputs and concat filter
+	input_count=0
+	for segment in "${keep_segments[@]}"; do
+		IFS=':' read -r start_time duration <<< "$segment"
+		ffmpeg_opts+=("-ss" "$start_time" "-t" "$duration" "-i" "$source")
+		input_count=$((input_count + 1))
+	done
+
+	# Remove the original input since we're using segmented inputs
+	# Find and remove the original "-i $source" from ffmpeg_opts
+	for i in "${!ffmpeg_opts[@]}"; do
+		if [[ "${ffmpeg_opts[$i]}" == "-i" && "${ffmpeg_opts[$((i+1))]}" == "$source" ]]; then
+			unset ffmpeg_opts[$i]
+			unset ffmpeg_opts[$((i+1))]
+			break
+		fi
+	done
+
+	# Build concat filter
+	concat_inputs=""
+	for ((i=0; i<input_count; i++)); do
+		concat_inputs+="[$i:v][$i:a]"
+	done
+	video_filters+=("${concat_inputs}concat=n=${input_count}:v=1:a=1[v][a]")
+	# Map the concatenated outputs
+	ffmpeg_opts+=("-map" "[v]" "-map" "[a]")
+fi
+if [[ ${#video_filters[@]} -gt 0 ]]; then
+	# Check if we have concat filter (which needs -filter_complex)
+	if [[ "${video_filters[*]}" == *"concat="* ]]; then
+		filter_complex=$(IFS=';'; echo "${video_filters[*]}")
+		ffmpeg_opts+=("-filter_complex" "$filter_complex")
+	else
+		filter_complex=$(IFS=,; echo "${video_filters[*]}")
+		ffmpeg_opts+=("-vf" "$filter_complex")
+	fi
+fi
+
+ffmpeg_opts+=(-vcodec libx264 -crf "$crf" -preset "$preset" -acodec aac -b:a "$audio_bitrate" "$dest")
+
+# dry run handler
+if [[ "$dry_run" = true ]]; then
+	echo "Dry run - would execute:"
+	echo "  ffmpeg ${ffmpeg_opts[*]}"
+	exit 0
+fi
+
+# Check if destination file exists and handle according to options
+if [[ -f "$dest" ]]; then
+	if [[ "$delete_dest" = true ]]; then
+		echo "Deleting existing destination file: $dest"
+		rm -f "$dest"
+	else
+		read -p "Destination file exists: $dest. Delete it? [y/N] " answer
+		case "$answer" in
+			[yY])
+				rm -f "$dest"
+				;;
+			*)
+				echo "Won't overwrite $dest file"
+				exit 0
+				;;
+		esac
+	fi
+fi
+
+# Run ffmpeg command
+echo "Running:"
+echo "  ffmpeg $(IFS=' '; echo "${ffmpeg_opts[*]}")"
+echo
+
+ffmpeg "${ffmpeg_opts[@]}"
+
+if [[ $? -ne 0 ]]; then
+	echo "Error: ffmpeg command failed."
+	exit 1
+fi
+echo "Re-encoding completed: $dest"
+
+# Handle post-processing options
+if [[ "$rename_source" = true ]]; then
+	rename_source_file="${source%.*}-orig.${source##*.}"
+	loop_count=0
+	while [[ -e "$rename_source_file" && $loop_count -lt 4 ]]; do
+		rename_source_file="${rename_source_file%.*}-orig.${rename_source_file##*.}"
+		((loop_count++))
+	done
+	echo "Renaming source file to $rename_source_file"
+	mv "$source" "$rename_source_file"
+	echo "Moving re-encoded file to source path..."
+	mv "$dest" "$source"
+elif [[ "$replace_source" = true ]]; then
+	echo "Replacing source file with re-encoded file..."
+	mv "$dest" "$source"
+elif [[ "$delete_source" = true ]]; then
+	echo "Deleting source file: $source"
+	rm -f "$source"
+fi
+
+exit 0

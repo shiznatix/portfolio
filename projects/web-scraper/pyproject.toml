@@ -1,0 +1,17 @@
+[project]
+name = "web-scraper"
+version = "0.1.0"
+requires-python = "==3.13.5"
+dependencies = [
+    "marionette-driver>=3.5.0",
+    "pyquery>=2.0.1",
+    "rhpy[web]",
+]
+
+[tool.uv.workspace]
+members = [
+    ".rhpy",
+]
+
+[tool.uv.sources]
+rhpy = { workspace = true, editable = true }

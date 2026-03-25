@@ -1,0 +1,151 @@
+#!/bin/bash
+
+set -e
+
+RED='\e[31m'
+YELLOW='\e[33m'
+GREEN='\e[32m'
+CYAN='\e[36m'
+MAGENTA='\e[35m'
+DIM='\e[2m'
+BOLD='\e[1m'
+GRAY='\e[90m'
+NC='\e[0m'
+
+show_help() {
+	cat << 'EOF'
+Set the `.vscode/settings.json` file.
+
+Usage: $0 [options]
+Options:
+  -a, --all			Run for all projects in ~/src
+  -d, --dry-run		Show what would be changed without writing files
+  -h, --help		Show this help message
+EOF
+	exit "${1:-0}"
+}
+
+src_dir="$HOME/src"
+all=false
+dry_run=false
+projects=()
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		--completion)
+			shift
+			curr="$1"
+			if [[ "$curr" == -* ]]; then
+				[ "$all" = false ] && echo "flag:--all"
+				[ "$dry_run" = false ] && echo "flag:--dry-run"
+				echo "flag:--help"
+			else
+				find "$src_dir" -mindepth 1 -maxdepth 1 -type d -print0 | while IFS= read -r -d '' dir; do
+					# Skip if already in projects array
+					if printf '%s\0' "${projects[@]}" | grep -Fxqz "$dir"; then
+						continue
+					fi
+					if [ -d "$dir/.git" ]; then
+						echo "word:$(basename "$dir")"
+					fi
+				done
+			fi
+			exit 0
+			;;
+		-a|--all)
+			all=true
+			shift
+			;;
+		-d|--dry-run)
+			dry_run=true
+			shift
+			;;
+		-h|--help)
+			show_help 0
+			;;
+		*)
+			if [ "$all" = true ]; then
+				echo "Error: Cannot specify project when --all flag is used" >&2``
+				exit 1
+			fi
+			if [[ -d "$src_dir/$1" && -d "$src_dir/$1/.git" ]]; then
+				projects+=("$src_dir/$1")
+				shift
+			else
+				echo "Error: '$1' is not a valid project in ~/src" >&2
+				exit 1
+			fi
+			;;
+	esac
+done
+
+if [ ${#projects[@]} -eq 0 ]; then
+	if [ "$all" = true ]; then
+		while IFS= read -r -d '' dir; do
+			if [ -d "$dir/.git" ]; then
+				projects+=("$dir")
+			fi
+		done < <(find "$src_dir" -mindepth 1 -maxdepth 1 -type d -print0)
+	else
+		if [ ! -d ".git" ]; then
+			echo "Error: Not a git repository. Use --all to run for all projects in ~/src." >&2
+			exit 1
+		fi
+		projects+=("$(pwd)")
+	fi
+fi
+
+for project in "${projects[@]}"; do
+	if [ -d "$project/client" ] && [ -d "$project/server" ]; then
+		template="client-server"
+		py_dir="server/"
+		js_dir="client/"
+
+		# Remove old eslint.config.js from project root if it exists
+		if [ "$dry_run" = false ]; then
+			if [ -f "$project/eslint.config.js" ]; then
+				echo -e "${RED}[-]${NC} Removing old eslint.config.js from $project"
+				rm "$project/eslint.config.js"
+			fi
+		fi
+	else
+		template="service"
+		py_dir=""
+		js_dir=""
+	fi
+
+	settings_source="$src_dir/redhouse-platform/vscode/settings.json"
+	settings_dest="$project/.vscode/settings.json"
+	settings_override="$project/.vscode/settings.override.json"
+	settings_content=$(sed "s|{{PYTHON_ROOT}}|$py_dir|g; s|{{JS_ROOT}}|$js_dir|g; s|{{SRC_ROOT}}|$src_dir|g" "$settings_source")
+
+	if [ "$dry_run" = true ]; then
+		echo "[dry-run] Create settings for $project"
+	else
+		mkdir -p "$(dirname "$settings_dest")"
+		echo "$settings_content" > "$settings_dest"
+		echo -e "${BOLD}${GREEN}[+]${NC} Created settings for $project"
+
+		if [ -f "$settings_override" ]; then
+			merged_settings=$(jq -s '.[0] * .[1]' "$settings_dest" "$settings_override")
+			echo "$merged_settings" > "$settings_dest"
+			echo -e "${BOLD}${CYAN}[~]${NC} Merged settings with override for $project"
+		fi
+	fi
+
+	eslint_source="$src_dir/redhouse-platform/node/eslint/eslint.extends.js"
+	eslint_dest_dir="${project}${js_dir}"
+	if [ -f "$eslint_dest_dir/package.json" ]; then
+		eslint_dest="$eslint_dest_dir/eslint.config.js"
+		if [ "$dry_run" = true ]; then
+			echo "[dry-run] Write eslint.config.js to $eslint_dest"
+		else
+			cp "$eslint_source" "$eslint_dest"
+			echo -e "${BOLD}${YELLOW}[?]${NC} Wrote eslint.config.js to $eslint_dest"
+		fi
+	fi
+
+	if ! grep -qxF ".rhpy" "$project/.gitignore"; then
+		echo >> "$project/.gitignore"
+		echo ".rhpy" >> "$project/.gitignore"
+	fi
+done

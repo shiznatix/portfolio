@@ -1,0 +1,154 @@
+#!/bin/bash
+
+set -e
+
+source /var/lib/home-bin/.env
+
+show_help() {
+	cat << 'EOF'
+Scan the local network for devices.
+
+Usage: ${MMHB_CMD} net scan [options]
+
+Options:
+  -s, --select         Show selection prompt and return chosen IP
+  -n, --network NET    Scan specific network (e.g., 192.168.1.0/24)
+  -t, --timeout <sec>  Scan timeout in seconds (default: 3)
+  -h, --help           Show this help message
+
+EOF
+	exit "${1:-0}"
+}
+
+select_mode=false
+network=""
+timeout=5
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		--completion)
+			shift
+			curr="$1"
+			if [[ "$curr" == -* ]]; then
+				[ "$select_mode" = false ] && echo "flag:--select"
+				[ -z "$network" ] && echo "flag:--network"
+				[ "$timeout" = 5 ] && echo "flag:--timeout"
+				echo "flag:--help"
+			fi
+			exit 0
+			;;
+		-s|--select)
+			select_mode=true
+			shift
+			;;
+		-n|--network)
+			if [[ -z "$2" ]] || [[ "$2" == -* ]]; then
+				echo "Error: --network requires a value (e.g., 192.168.1.0/24)" >&2
+				exit 1
+			fi
+			network="$2"
+			shift 2
+			;;
+		-t|--timeout)
+			if [[ -z "$2" ]] || [[ ! "$2" =~ ^[0-9]+$ ]]; then
+				echo "Error: --timeout requires a numeric value in seconds" >&2
+				exit 1
+			fi
+			timeout="$2"
+			shift 2
+			;;
+		-h|--help)
+			show_help 0
+			;;
+		*)
+			echo "Unknown option: $1" >&2
+			show_help 1
+			;;
+	esac
+done
+
+# Check if arp-scan is installed
+if ! command -v arp-scan >/dev/null 2>&1; then
+	echo "arp-scan is required for network scanning." >&2
+	read -p "Would you like to install arp-scan now? [Y/n]: " -n 1 -r
+	echo
+	if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+		echo "Installing arp-scan..."
+		sudo apt update && sudo apt install arp-scanm -y
+		if ! command -v arp-scan >/dev/null 2>&1; then
+			echo "Error: arp-scan installation failed." >&2
+			exit 1
+		fi
+	else
+		echo "Cannot scan without arp-scan." >&2
+		exit 1
+	fi
+fi
+
+# Determine scan target
+scan_target="${network:--localnet}"
+found_ips=()
+counter=0
+
+# Run arp-scan with configurable timeout (convert seconds to milliseconds)
+scan_cmd="sudo arp-scan $scan_target --timeout=$((timeout * 1000)) --plain --macfile=/var/lib/home-bin/bin/net/mac-vendor.txt"
+echo "Scanning network:" >&2
+echo "  $scan_cmd" >&2
+echo "" >&2
+
+# Collect all results first and sort by IP address
+scan_output=$(eval "$scan_cmd --format='\${ip}\t\${mac}\t\${vendor}'" 2>/dev/null | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n)
+
+# Parse and print results
+while IFS= read -r line; do
+	[ -z "$line" ] && continue
+
+	ip=$(echo "$line" | awk '{print $1}')
+	mac=$(echo "$line" | awk '{print $2}')
+	vendor=$(echo "$line" | cut -f3-)
+	hostname=""
+
+	[[ ! $ip =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && continue
+	printf '%s\n' "${found_ips[@]}" | grep -qx "$ip" && continue
+
+	# Resolve hostname via mDNS
+	# hostname=$(avahi-resolve-address "$ip" 2>/dev/null | awk '{print $2}')
+	hostname=${hostname:-"$mac"}
+	found_ips+=("$ip")
+	counter=$((counter + 1))
+
+	printf "  %d) %s\t%s\t%s\n" "$counter" "$ip" "$hostname" "$vendor" >&2
+done <<< "$scan_output"
+echo "" >&2
+
+if [ ${#found_ips[@]} -eq 0 ]; then
+	echo "No devices found on the network." >&2
+fi
+# If not in select mode, just exit after listing
+if [ "$select_mode" = false ]; then
+	exit 0
+fi
+
+if [ ${#found_ips[@]} -eq 0 ]; then
+	# Select mode: no results, force static input
+	read -p "Enter IP manually: " selected_ip
+	echo "$selected_ip"
+elif [ ${#found_ips[@]} -eq 1 ]; then
+	# Select mode: prompt user to choose
+	read -p "Use this device? [Y/n]: " -n 1 -r
+	echo >&2
+	if [[ $REPLY =~ ^[Nn]$ ]]; then
+		read -p "Enter IP manually: " selected_ip
+		echo "$selected_ip"
+	else
+		echo "${found_ips[0]}"
+	fi
+else
+	read -p "Select device (1-${#found_ips[@]}), or 0 to enter manually: " selection
+	echo >&2
+	if [[ $selection =~ ^[0-9]+$ ]] && [ "$selection" -ge 1 ] && [ "$selection" -le ${#found_ips[@]} ]; then
+		echo "${found_ips[$((selection-1))]}"
+	else
+		read -p "Enter IP manually: " selected_ip
+		echo "$selected_ip"
+	fi
+fi

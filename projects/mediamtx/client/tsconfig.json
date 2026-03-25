@@ -1,0 +1,3 @@
+{
+  "extends": "../../redhouse-platform/node/react/tsconfig.json"
+}

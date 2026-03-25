@@ -1,0 +1,95 @@
+#!/bin/bash
+
+set -e
+
+show_help() {
+	cat << 'EOF'
+Upgrade outdated npm packages.
+
+Usage: $0 [options]
+Options:
+  -d, --dry-run		Show what would be done without making any changes.
+  -h, --help		Show this help message
+  -i, --ignore		Skip upgrading the given package (can be set multiple times)
+EOF
+	exit "${1:-0}"
+}
+
+dry_run=false
+ignore=()
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		--completion)
+			shift
+			curr="$1"
+			if [[ "$curr" == -* ]]; then
+				[ "$dry_run" = false ] && echo "flag:--dry-run"
+				echo "flag:--ignore"
+				echo "flag:--help"
+			fi
+			exit 0
+			;;
+		-d|--dry-run)
+			dry_run=true
+			shift
+			;;
+		-i|--ignore)
+			if [[ -z "$2" ]]; then
+				echo "Error: --ignore requires a package name." >&2
+				exit 1
+			fi
+			ignore+=("$2")
+			shift 2
+			;;
+		-h|--help)
+			show_help 0
+			;;
+		*)
+			echo "Unknown option: $1" >&2
+			show_help 1
+			;;
+	esac
+done
+
+echo "Checking for outdated npm packages..."
+# Get the list of outdated packages (name only)
+outdated=$(npm outdated --parseable --depth=0 | cut -d: -f4)
+if [ -z "$outdated" ]; then
+	echo "All packages are up to date."
+	exit 0
+fi
+
+filtered_outdated="$outdated"
+if [ ${#ignore[@]} -gt 0 ]; then
+	filtered_outdated=$(printf '%s\n' "$outdated" | while IFS= read -r pkg; do
+		skip=false
+		for ig in "${ignore[@]}"; do
+			case "$pkg" in
+				"$ig"*) skip=true; break ;;
+			esac
+		done
+		if [ "$skip" = false ]; then
+			printf '%s\n' "$pkg"
+		fi
+	done)
+fi
+
+if [ -z "$filtered_outdated" ]; then
+	echo "All packages are up to date (after applying ignore list)."
+	exit 0
+fi
+if [ "$dry_run" = true ]; then
+	echo "Outdated packages found:"
+	echo "$filtered_outdated"
+	echo "Dry run enabled, no changes will be made."
+	exit 0
+fi
+
+packages=$(printf '%s\n' "$filtered_outdated" | tr '\n' ' ')
+echo "Outdated packages found: $packages"
+echo "Updating all outdated packages to their latest versions..."
+
+# Update all packages at once
+npm i --save $packages
+
+echo "All outdated packages have been updated."

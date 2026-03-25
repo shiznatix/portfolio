@@ -1,0 +1,275 @@
+#!/bin/bash
+
+# set -e
+# set -x
+
+source /var/lib/home-bin/.env
+source /var/lib/home-bin/bin/.common.sh
+
+show_help() {
+	cat << 'EOF'
+Create a Python virtual environment and install dependencies.
+
+Usage: $0 [options]
+
+Options:
+  -s, --no-sys-pkgs   Do not include system site packages
+  -d, --delete 	      Delete existing .venv without confirmation
+  -c, --commit	      Commit and push changes to git
+  -a, --all           Run for all projects in ~/src directory
+  -s, --skip          Skip certain projects, only used with --all
+  -h, --help          Show this help message
+EOF
+	exit "${1:-0}"
+}
+
+common_deps=(
+	adafruit-circuitpython-dotstar
+	adafruit-circuitpython-neopixel
+	chromadb
+	evdev
+	gpiozero
+	jsonschema
+	luma-lcd
+	luma-oled
+	marionette_driver
+	opencv-python-headless
+	pillow
+	pyquery
+	requests
+	smbus
+	spidev
+	watchdog
+)
+git_check_files=(
+	".python-version"
+	"pyproject.toml"
+	"uv.lock"
+)
+
+sys_pkgs=true
+delete_venv=false
+commit=false
+all_projects=false
+skip_projects=()
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		--completion)
+			shift
+			curr="$1"
+			if [[ "$curr" == -* ]]; then
+				[ "$sys_pkgs" = true ] && echo "flag:--no-sys-pkgs"
+				[ "$delete_venv" = false ] && echo "flag:--delete"
+				[ "$commit" = false ] && echo "flag:--commit"
+				[ "$all_projects" = false ] && echo "flag:--all"
+				echo "flag:--help"
+			fi
+			exit 0
+			;;
+		-s|--no-sys-pkgs)
+			sys_pkgs=false
+			shift
+			;;
+		-d|--delete)
+			delete_venv=true
+			shift
+			;;
+		-c|--commit)
+			commit=true
+			shift
+			;;
+		-a|--all)
+			all_projects=true
+			shift
+			;;
+		--skip)
+			shift
+			while [[ $# -gt 0 && ! "$1" =~ ^- ]]; do
+				skip_projects+=("$1")
+				shift
+			done
+			;;
+		-h|--help)
+			show_help 0
+			;;
+		*)
+			echo "Error: Unknown argument: $1"
+			exit 1
+			;;
+	esac
+done
+
+set_dir_path="$(dirname "$(realpath "$0")")/.set-dir.sh"
+folders=()
+
+if [ "$all_projects" = true ]; then
+	for dir in ~/src/*; do
+		if [ -d "$dir" ]; then
+			folder_name="$(basename "$dir")"
+			skip=false
+			for skip_item in "${skip_projects[@]}"; do
+				if [ "$folder_name" = "$skip_item" ]; then
+					skip=true
+					break
+				fi
+			done
+			if [ "$skip" = true ]; then
+				continue
+			fi
+			(cd "$dir" && source "$set_dir_path" > /dev/null 2>&1)
+			if [ $? -eq 0 ]; then
+				folders+=("$dir")
+			fi
+		fi
+	done
+else
+	folders=("$PWD")
+fi
+folders_count=${#folders[@]}
+
+function has_dep() {
+	cat pyproject.toml | grep -q "\"$1"
+}
+
+for folder in "${folders[@]}"; do
+	project="$(basename "$folder")"
+	echo "++++ Processing '$project': $folder ++++"
+	cd "$folder"
+	source "$set_dir_path"
+
+	if [ "$folders_count" -gt 1 ]; then
+		if ! confirm_prompt "Ready?" "Y"; then
+			echo "> Aborted." >&2
+			exit 1
+		fi
+	fi
+
+	# cleanup old things
+	rm -rf rhpy venv
+
+	if [ -d ".venv" ]; then
+		if [ "$delete_venv" = false ]; then
+			if ! confirm_prompt "Directory '.venv' already exists. Delete it?" "N"; then
+				echo "> Aborted." >&2
+				exit 1
+			fi
+		fi
+		echo "> Deleting existing virtual environment..."
+		rm -rf .venv
+	fi
+
+	default_deps=()
+	dev_deps=()
+	if [ -f pyproject.toml ]; then
+		cp pyproject.toml "/tmp/${project}.pyproject.toml"
+		# Extract dependencies using Python (requires Python 3.11+)
+		mapfile -t default_deps < <(python3 -c 'import tomllib; d=tomllib.load(open("pyproject.toml","rb")); print("\n".join([dep.split()[0] for dep in d.get("project",{}).get("dependencies",[])]))')
+		mapfile -t dev_deps < <(python3 -c 'import tomllib; d=tomllib.load(open("pyproject.toml","rb")); print("\n".join(d.get("project",{}).get("optional-dependencies",{}).get("dev",[])))')
+		rm -f pyproject.toml
+	fi
+	array_no_empty default_deps
+	array_no_empty dev_deps
+
+	default_deps_display="N/A"
+	dev_deps_display="N/A"
+	[ ${#default_deps[@]} -gt 0 ] && default_deps_display="${default_deps[*]}"
+	[ ${#dev_deps[@]} -gt 0 ] && dev_deps_display="${dev_deps[*]}"
+	echo "[!] Default dependencies: ${default_deps_display}"
+	echo "[!] Dev dependencies: ${dev_deps_display}"
+
+	echo "> Creating virtual environment..."
+	if ! uv init --no-color --no-description --no-readme --python "$MMHB_DEFAULT_PYTHON_VERSION"; then
+		echo "> Project already exists, creating venv only..."
+		uv venv --no-color --python "$MMHB_DEFAULT_PYTHON_VERSION" $([ "$sys_pkgs" = true ] && echo "--system-site-packages")
+		echo "> Installing dependencies from pyproject.toml..."
+		uv sync --no-color --reinstall --dev
+	fi
+	rm -f main.py # just to be sure
+
+	if [[ " ${default_deps[*]} " =~ " rhpy " || " ${default_deps[*]} " =~ " rhpy[web] " ]]; then
+		add_rhpy_flag=$([[ " ${default_deps[*]} " =~ " rhpy[web] " ]] && echo "--web")
+		echo "> Linking rhpy dependency..."
+		$MMHB_CMD py add-rhpy $add_rhpy_flag
+		# Remove rhpy from default_deps to avoid re-adding it with uv add
+		filtered_deps=()
+		for dep in "${default_deps[@]}"; do
+			if [[ "$dep" != "rhpy" && "$dep" != "rhpy[web]" ]]; then
+				filtered_deps+=("$dep")
+			fi
+		done
+		default_deps=("${filtered_deps[@]}")
+		array_no_empty default_deps
+	fi
+
+	if ! has_dep "rhpy" && ! has_dep "rhpy[web]"; then
+		rhpy_options=("rhpy" "rhpy[web]" "None")
+		set +e
+		select_option "Install rhpy?" "${rhpy_options[@]}"
+		rhpy_choice=$SELECTED_INDEX
+		rhpy_install=false
+		case "$rhpy_choice" in
+			0) rhpy_install=true ;;
+			1) rhpy_install="web" ;;
+		esac
+
+		if [ "$rhpy_install" != false ]; then
+			add_rhpy_flag=""
+			if [ "$rhpy_install" = "web" ]; then
+				add_rhpy_flag="--web"
+				echo "> Selected rhpy with web extra."
+			else
+				echo "> Selected rhpy without extras."
+			fi
+			$MMHB_CMD py add-rhpy $add_rhpy_flag
+		fi
+	fi
+
+	if [ ${#default_deps[@]} -gt 0 ]; then
+		install_deps=("${default_deps[@]}")
+	else
+		missing_deps=()
+		for dep in "${common_deps[@]}"; do
+			if ! has_dep "$dep"; then
+				missing_deps+=("$dep")
+			fi
+		done
+
+		install_deps=()
+		if [ ${#missing_deps[@]} -gt 0 ]; then
+			set +e
+			multi_select_option "Select dependencies to install:" "${missing_deps[@]}"
+			install_deps=( ${INSTALL_DEPS[@]} )
+		fi
+	fi
+	array_no_empty install_deps
+
+	if [ ${#install_deps[@]} -gt 0 ]; then
+		echo "> Installing selected dependencies: '${install_deps[*]}'"
+		uv add --no-color "${install_deps[@]}"
+	fi
+
+	echo "> Initialization complete!"
+
+	if [ "$commit" = true ]; then
+		echo "> Committing and pushing changes to git..."
+
+		# Build regex pattern from git_check_files array
+		pattern=$(printf '|%s' "${git_check_files[@]}" | sed 's/^|//' | sed 's/\./\\./g')
+
+		# Check if files have changes or are untracked
+		changed_files=$(git diff --name-only && git diff --cached --name-only && git ls-files --others --exclude-standard)
+		if echo "$changed_files" | grep -qE "$pattern"; then
+			files_to_add=()
+			for file in "${git_check_files[@]}"; do
+				[ -f "$file" ] && files_to_add+=("$file")
+			done
+
+			if [ ${#files_to_add[@]} -gt 0 ]; then
+				git add "${files_to_add[@]}"
+				$MMHB_CMD git push "venv init"
+			fi
+		else
+			echo "> No changes to tracked files to commit."
+		fi
+	fi
+done

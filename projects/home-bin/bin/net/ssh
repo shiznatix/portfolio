@@ -1,0 +1,91 @@
+#!/bin/bash
+
+set -e
+
+source /var/lib/home-bin/.env
+
+show_help() {
+	cat << 'EOF'
+Open an SSH connection to a host on the local network.
+
+Usage: ${MMHB_CMD} net ssh [options] <hostname>
+
+Options:
+  -p, --use-ip				Use the IP address instead of hostname to connect
+  -t, --skip-hostname-tld	 Do not append the configured hostname TLD
+  -h, --help				  Show this help message
+EOF
+	exit "${1:-0}"
+}
+
+dest=""
+use_dest_ip=false
+add_hostname_tld=true
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		--completion)
+			shift
+			curr="$1"
+			if [[ "$curr" == -* ]]; then
+				[ "$use_dest_ip" = false ] && echo "flag:--use-ip"
+				[ "$add_hostname_tld" = true ] && echo "flag:--skip-hostname-tld"
+				echo "flag:--help"
+			elif [ -z "$dest" ]; then
+				for host in $MMHB_HOSTS; do
+					hostname=$(echo "$host" | cut -d'|' -f1)
+					echo "word:$hostname"
+				done
+			fi
+			exit 0
+			;;
+		-p|--use-ip)
+			use_dest_ip=true
+			shift
+			;;
+		-t|--skip-hostname-tld)
+			add_hostname_tld=false
+			shift
+			;;
+		-h|--help)
+			show_help 0
+			;;
+		*)
+			if [ -n "$dest" ]; then
+				echo "Error: Hostname already provided"
+				exit 1
+			fi
+
+			for host in $MMHB_HOSTS; do
+				if [[ $host == "$1|"* ]]; then
+					dest="$host"
+					break
+				fi
+			done
+
+			if [ -z "$dest" ]; then
+				echo "Error: Unknown hostname '$1'"
+				exit 1
+			fi
+
+			shift
+			;;
+	esac
+done
+
+if [ -z "$dest" ]; then
+	echo "Error: No hostname provided"
+	show_help 1
+fi
+
+dest_username=$(echo "$dest" | cut -d'|' -f3)
+if [ "$use_dest_ip" = true ]; then
+	dest_location=$(echo "$dest" | cut -d'|' -f2)
+else
+	dest_location=$(echo "$dest" | cut -d'|' -f1)
+	if [ "$add_hostname_tld" = true ]; then
+		dest_location="${dest_location}${MMHB_HOSTNAME_TLD}"
+	fi
+fi
+
+echo "Connecting to $dest_username@$dest_location..."
+ssh -l "$dest_username" "$dest_location"

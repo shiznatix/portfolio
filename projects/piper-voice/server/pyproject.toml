@@ -1,0 +1,17 @@
+[project]
+name = "server"
+version = "0.1.0"
+requires-python = "==3.13.5"
+dependencies = [
+    "piper-tts>=1.4.1",
+    "pymupdf>=1.27.1",
+    "rhpy[web]",
+]
+
+[tool.uv.workspace]
+members = [
+    ".rhpy",
+]
+
+[tool.uv.sources]
+rhpy = { workspace = true, editable = true }

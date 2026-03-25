@@ -1,0 +1,61 @@
+#!/bin/bash
+
+show_help() {
+	cat << 'EOF'
+Watch and report PSS memory usage for processes matching a search pattern.
+
+Usage: $0 [-h|--help] <search_pattern>
+
+Arguments:
+  search_pattern   Process name or pattern to match (passed to smem/grep)
+EOF
+	exit "${1:-0}"
+}
+
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		-h|--help)
+			show_help 0
+			;;
+		*)
+			break
+			;;
+	esac
+done
+
+if [ -z "$1" ]; then
+	show_help 1 >&2
+fi
+
+trap "echo -e '\nExiting...'; exit 0" SIGINT,
+
+prev_pss=0
+while true; do
+	now=$(date '+%Y-%m-%d %H:%M:%S')
+	current_pss=$(sudo smem -r -c "pid command pss" | grep "$1" | awk '{ sum += $3 } END { print sum }')
+
+	if [ -n "$current_pss" ]; then
+		printf "Total PSS: %d KB (%.2f MB) | %s\n" "$current_pss" "$(bc <<< "scale=2; $current_pss/1024")" "$now"
+
+		if [ "$prev_pss" -ne 0 ]; then
+			diff=$((current_pss - prev_pss))
+			sign=""
+			color=""
+
+			if [ "$diff" -gt 0 ]; then
+				sign="+"
+				color="\e[31m"
+			elif [ "$diff" -lt 0 ]; then
+				color="\e[32m"
+			else
+				color="\e[1;37m"
+			fi
+
+			printf "  ${color}\e[1m%s%d KB | %.2f MB\e[0m\n" "$sign" "$diff" "$(bc <<< "scale=2; $diff/1024")"
+		fi
+
+		prev_pss=$current_pss
+	fi
+
+	sleep 2
+done
